@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""SessionStart: workspace 하위 레포의 repo-map을 생성·캐시해 컨텍스트로 주입."""
+"""SessionStart: workspace 하위 레포의 repo-map을 생성·캐시해 컨텍스트로 주입.
+
+- git 레포: 스택·스크립트·디렉토리·git 상태 요약. 레포에 AGENTS.md/CLAUDE.md가 있으면
+  구조는 그 문서가 담당하므로 트리·스크립트를 줄인 lean 모드로 주입한다(토큰 절약).
+- git 레포가 아닌 그룹 디렉토리(예: linkive/): 트리 대신 하위 레포의 브랜치·변경 요약.
+"""
 import glob
 import hashlib
 import json
@@ -15,22 +20,32 @@ TREE_EXCLUDES = {"node_modules", ".next", "dist", "build", ".turbo",
 KNOWN_DEPS = ("next", "react", "react-native", "vite", "webpack",
               "@nestjs/core", "express", "typescript")
 MAX_AGE_SECONDS = 7 * 24 * 3600
+GROUP_MAX_AGE_SECONDS = 15 * 60
 MAX_TREE_LINES = 60
 MAX_CHILDREN_PER_DIR = 8
+MAX_STATUS_LINES = 12
+MAX_GROUP_ROWS = 12
+GROUP_BUDGET_SECONDS = 6.0
+INSTRUCTION_FILES = ("AGENTS.md", "CLAUDE.md")
 
 
-def git(repo, *args):
+def git(repo, *args, timeout=5):
     try:
         proc = subprocess.run(
             ["git", "-C", repo] + list(args),
-            capture_output=True, text=True, timeout=5)
+            capture_output=True, text=True, timeout=timeout)
         return proc.stdout.strip() if proc.returncode == 0 else ""
     except (subprocess.SubprocessError, OSError):
         return ""
 
 
+def git_root(cwd):
+    """git 루트. 레포가 아니면 빈 문자열."""
+    return git(cwd, "rev-parse", "--show-toplevel")
+
+
 def repo_root(cwd):
-    return git(cwd, "rev-parse", "--show-toplevel") or cwd
+    return git_root(cwd) or cwd
 
 
 def read_json(path):
@@ -46,10 +61,10 @@ def cache_path(root):
     return os.path.join(lib.MAP_CACHE_DIR, digest + ".json")
 
 
-def load_cached_map(root, fingerprint):
+def load_cached_map(root, fingerprint, max_age=MAX_AGE_SECONDS):
     entry = read_json(cache_path(root))
     cached_fingerprint = entry.get("fingerprint", entry.get("head", ""))
-    if cached_fingerprint == fingerprint and time.time() - entry.get("time", 0) < MAX_AGE_SECONDS:
+    if cached_fingerprint == fingerprint and time.time() - entry.get("time", 0) < max_age:
         return entry.get("map")
     return None
 
@@ -62,13 +77,15 @@ def save_cached_map(root, fingerprint, text):
 
 
 def repo_fingerprint(root):
-    """컨텍스트에 영향을 주는 git/메타데이터 변경을 캐시 키에 포함한다."""
-    paths = ["package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock",
-             "AGENTS.md", "CLAUDE.md", "apps", "packages", "services"]
+    """컨텍스트에 영향을 주는 git/메타데이터 변경을 캐시 키에 포함한다.
+
+    build_map()이 전체 git 상태를 보여 주므로 fingerprint도 같은 범위여야 한다. 일부
+    디렉토리만 보면 루트 src/ 같은 변경이 최대 7일 동안 캐시에 가려질 수 있다.
+    """
     pieces = [
         git(root, "rev-parse", "HEAD"),
         git(root, "branch", "--show-current"),
-        git(root, "status", "--porcelain", "--", *paths),
+        git(root, "status", "--porcelain"),
     ]
     metadata = [
         os.path.join(root, "package.json"),
@@ -112,12 +129,12 @@ def stack_lines(root, pkg):
     return lines
 
 
-def scripts_lines(root, pkg):
+def scripts_lines(root, pkg, limit=12):
     lines = []
 
     def add(label, scripts):
         if scripts:
-            names = ", ".join("`%s`" % n for n in list(scripts)[:12])
+            names = ", ".join("`%s`" % n for n in list(scripts)[:limit])
             lines.append("- %s 스크립트: %s" % (label, names))
 
     add("루트", pkg.get("scripts") or {})
@@ -243,9 +260,12 @@ def staleness_warning(root, doc_path):
         return None
     if count < STALE_COMMITS_THRESHOLD:
         return None
-    return ("⚠️ [workspace harness] 아래 심층 컨텍스트 문서 이후 이 레포에 커밋 %d개가 쌓였습니다 — "
-            "구조·컨벤션 서술이 낡았을 수 있습니다. 코드와 어긋나면 코드를 믿고, "
-            "사용자에게 문서 재생성을 제안하세요." % count)
+    return ("⚠️ 심층 컨텍스트 문서 이후 커밋 %d개 — 코드와 어긋나면 코드를 믿고, "
+            "사용자에게 문서 재생성을 제안할 것." % count)
+
+
+def has_instruction_file(root):
+    return any(os.path.exists(os.path.join(root, name)) for name in INSTRUCTION_FILES)
 
 
 def pointer_lines(root):
@@ -265,18 +285,81 @@ def pointer_lines(root):
 
 def build_map(root):
     pkg = read_json(os.path.join(root, "package.json"))
+    lean = has_instruction_file(root)
     parts = ["## repo-map: %s (%s)" % (os.path.basename(root), root), ""]
     parts += stack_lines(root, pkg)
     parts += pointer_lines(root)
-    parts += scripts_lines(root, pkg)
-    tree = tree_lines(root)
+    parts += scripts_lines(root, pkg, limit=6 if lean else 12)
+    # 지침 파일이 구조를 설명하는 레포는 최상위 디렉토리만 보여 준다.
+    tree = tree_lines(root, max_depth=1 if lean else 2)
     if tree:
-        parts += ["", "### 디렉토리 (2 depth)"] + tree
+        parts += ["", "### 디렉토리 (%d depth)" % (1 if lean else 2)] + tree
     status = git(root, "status", "--short", "--branch")
     if status:
-        parts += ["", "### 현재 git 상태"] + ["- " + c for c in status.splitlines()[:20]]
+        lines = status.splitlines()
+        shown = ["- " + c for c in lines[:MAX_STATUS_LINES]]
+        if len(lines) > MAX_STATUS_LINES:
+            shown.append("- … 외 %d개" % (len(lines) - MAX_STATUS_LINES))
+        parts += ["", "### 현재 git 상태"] + shown
     parts += ["", "검증 명령은 AGENTS.md/CLAUDE.md를 우선하고, 없으면 위 package script를 확인할 것."]
     return "\n".join(parts)
+
+
+def group_rows(directory, budget_seconds=GROUP_BUDGET_SECONDS):
+    """하위 git 레포별 브랜치·최근 커밋·변경 수. 최근 커밋순, 시간 예산 안에서만."""
+    started = time.monotonic()
+
+    def budgeted_git(path, *args):
+        remaining = budget_seconds - (time.monotonic() - started)
+        if remaining <= 0:
+            return None
+        return git(path, *args, timeout=min(2, remaining))
+
+    rows = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return []
+    truncated = False
+    for name in names:
+        path = os.path.join(directory, name)
+        if name.startswith(".") or name in TREE_EXCLUDES:
+            continue
+        if not os.path.exists(os.path.join(path, ".git")):
+            continue
+        if time.monotonic() - started >= budget_seconds:
+            truncated = True
+            break
+        branch = budgeted_git(path, "branch", "--show-current")
+        last = budgeted_git(path, "log", "-1", "--format=%cs")
+        dirty = budgeted_git(path, "status", "--porcelain")
+        if None in (branch, last, dirty):
+            truncated = True
+            break
+        branch = branch or "(detached)"
+        dirty_count = len(dirty.splitlines()) if dirty else 0
+        rows.append((last, "- %s/ — %s, 최근 커밋 %s%s" % (
+            name, branch, last or "?",
+            ", 변경 %d개" % dirty_count if dirty_count else "")))
+    rows.sort(key=lambda row: row[0], reverse=True)
+    lines = [text for _, text in rows[:MAX_GROUP_ROWS]]
+    if truncated or len(rows) > MAX_GROUP_ROWS:
+        lines.append("- … (나머지 생략)")
+    return lines
+
+
+def build_group_map(directory):
+    rows = group_rows(directory)
+    if not rows:
+        return ""
+    return "\n".join([
+        "## 디렉토리 그룹: %s (%s) — git 레포 아님, 하위 레포 요약" % (
+            os.path.basename(directory), directory),
+        "",
+        *rows,
+        "",
+        "작업할 레포를 정해 그 경로를 기준으로 진행할 것. 레포별 규칙은 그 레포의 AGENTS.md/CLAUDE.md.",
+    ])
 
 
 def should_inject(root):
@@ -287,9 +370,23 @@ def should_inject(root):
 def main():
     data = lib.read_hook_input()
     cwd = data.get("cwd", "")
+    session_id = data.get("session_id", "")
     if not lib.in_workspace(cwd):
         return
-    root = os.path.realpath(repo_root(cwd))
+    root = git_root(cwd)
+    if not root:
+        directory = os.path.realpath(cwd)
+        if not should_inject(directory):
+            return
+        text = load_cached_map(directory, "group", GROUP_MAX_AGE_SECONDS)
+        if text is None:
+            text = build_group_map(directory)
+            save_cached_map(directory, "group", text)
+        if text:
+            lib.event("map-inject", session_id, "%s:%d" % (os.path.basename(directory), len(text)))
+            print(lib.hook_output("SessionStart", text))
+        return
+    root = os.path.realpath(root)
     if not should_inject(root):
         return
     fingerprint = repo_fingerprint(root)
@@ -297,7 +394,7 @@ def main():
     if text is None:
         text = build_map(root)
         save_cached_map(root, fingerprint, text)
-        lib.event("map-generate", data.get("session_id", ""), root)
+        lib.event("map-generate", session_id, root)
     deep = deep_context(root)
     if deep:
         warning = staleness_warning(root, deep_context_path(root))
@@ -305,13 +402,8 @@ def main():
         if warning:
             summary = warning + "\n\n" + summary
         text = text + "\n\n" + summary
-    lib.event("map-inject", data.get("session_id", ""), os.path.basename(root))
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": text,
-        }
-    }, ensure_ascii=False))
+    lib.event("map-inject", session_id, "%s:%d" % (os.path.basename(root), len(text)))
+    print(lib.hook_output("SessionStart", text))
 
 
 if __name__ == "__main__":

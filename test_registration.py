@@ -2,9 +2,23 @@ import copy
 import os
 import unittest
 
+import hooks_manifest as manifest
 import register_codex
 import register_hooks
 import sync_context
+
+
+class ManifestTest(unittest.TestCase):
+    def test_every_script_exists(self):
+        for spec in manifest.HOOKS:
+            self.assertTrue(os.path.exists(manifest.script_path(spec["script"])), spec["script"])
+
+    def test_retired_scripts_are_still_owned(self):
+        """재등록 때 낡은 항목이 정리되려면 은퇴한 스크립트도 소유 목록에 있어야 한다."""
+        for script in ("plan_gate.py", "bash_gate.py", "quick_bypass.py"):
+            self.assertTrue(manifest.is_owned_command("python3 /x/%s" % script))
+        self.assertTrue(manifest.is_owned_command("python3 /x/repo_map.py --harness-rev=abc"))
+        self.assertFalse(manifest.is_owned_command("python3 /x/other_hook.py"))
 
 
 class CodexRegistrationTest(unittest.TestCase):
@@ -28,22 +42,20 @@ class CodexRegistrationTest(unittest.TestCase):
                       register_codex.BLOCK)
         self.assertNotIn("exec_command|shell|unified_exec", register_codex.BLOCK)
 
-    def test_codex_registers_the_expected_scripts(self):
-        """개수가 아니라 어떤 스크립트가 걸리는지를 고정한다."""
-        for script in ("repo_map.py", "obsidian_bridge.py", "verify_gate.py"):
-            self.assertIn(script, register_codex.BLOCK, script)
-        self.assertNotIn("obsidian_scheduler.py", register_codex.BLOCK)
+    def test_codex_block_follows_manifest(self):
+        for spec in manifest.HOOKS:
+            self.assertIn("%s = [" % spec["event"], register_codex.BLOCK)
+            self.assertIn(manifest.codex_command(spec["script"]), register_codex.BLOCK)
+        for script in manifest.RETIRED_SCRIPTS:
+            self.assertNotIn(script, register_codex.BLOCK)
         # 모든 훅에 리비전이 붙어 코드가 바뀌면 Codex가 재승인을 요구한다
         self.assertEqual(register_codex.BLOCK.count("--harness-rev="),
                          register_codex.BLOCK.count('type = "command"'))
 
-    def test_codex_has_no_async_hooks(self):
-        """Codex 0.144는 async 훅을 건너뛴다 — 등록하면 조용히 실행되지 않는다."""
-        self.assertNotIn("async = true", register_codex.BLOCK)
-
-    def test_subagent_hook_stays_claude_only(self):
-        """Codex에는 subagent_start 이벤트가 없다."""
-        self.assertNotIn("vault_subagent.py", register_codex.BLOCK)
+    def test_codex_gets_subagent_hook(self):
+        """Codex 0.151+는 SubagentStart를 지원한다."""
+        self.assertIn("SubagentStart = [", register_codex.BLOCK)
+        self.assertIn("vault_subagent.py", register_codex.BLOCK)
 
     def test_commented_fallback_setting_does_not_count(self):
         self.assertFalse(register_codex.has_project_doc_fallback(
@@ -56,17 +68,14 @@ class ClaudeRegistrationTest(unittest.TestCase):
     def fixture(self):
         harness = register_hooks.HARNESS
         return {
-            "enabledPlugins": {
-                "frontend-design@claude-plugins-official": True,
-                register_hooks.INCOMPATIBLE_PLUGIN: True,
-            },
+            "enabledPlugins": {"frontend-design@claude-plugins-official": True},
             "hooks": {
                 "SessionStart": [{
                     "hooks": [
                         {"type": "command", "command":
                          "python3 %s/repo_map.py" % harness},
                         {"type": "command", "command":
-                         "python3 %s/obsidian_bridge.py" % harness},
+                         "python3 /elsewhere/other_hook.py"},
                         {"type": "command", "command":
                          "python3 %s/obsidian_scheduler.py" % harness},
                     ]
@@ -79,14 +88,24 @@ class ClaudeRegistrationTest(unittest.TestCase):
             }
         }
 
-    def test_preserves_unrelated_handler_in_mixed_group(self):
+    def test_preserves_unrelated_handler_and_removes_retired(self):
         settings = self.fixture()
         register_hooks.update_settings(settings)
         serialized = str(settings)
-        self.assertIn("obsidian_bridge.py", serialized)
+        self.assertIn("other_hook.py", serialized)
         self.assertNotIn("bash_gate.py", serialized)
         self.assertNotIn("obsidian_scheduler.py", serialized)
+        self.assertNotIn("PreToolUse", settings["hooks"])
         self.assertEqual(serialized.count("repo_map.py"), 1)
+
+    def test_installs_every_manifest_entry(self):
+        settings = self.fixture()
+        register_hooks.update_settings(settings)
+        for spec in manifest.HOOKS:
+            entries = settings["hooks"][spec["event"]]
+            commands = [(e.get("matcher"), h["command"]) for e in entries for h in e["hooks"]]
+            self.assertIn((spec.get("claude_matcher"), manifest.claude_command(spec["script"])),
+                          commands)
 
     def test_update_is_idempotent(self):
         settings = self.fixture()
@@ -95,23 +114,24 @@ class ClaudeRegistrationTest(unittest.TestCase):
         register_hooks.update_settings(settings)
         self.assertEqual(settings, once)
 
-    def test_disables_conflicting_plugin_and_preserves_others(self):
+    def test_does_not_touch_plugins(self):
         settings = self.fixture()
         register_hooks.update_settings(settings)
-        self.assertFalse(settings["enabledPlugins"][register_hooks.INCOMPATIBLE_PLUGIN])
-        self.assertTrue(
-            settings["enabledPlugins"]["frontend-design@claude-plugins-official"])
+        self.assertEqual(settings["enabledPlugins"],
+                         {"frontend-design@claude-plugins-official": True})
 
 
 class ContextSyncTest(unittest.TestCase):
     def test_source_is_tracked_harness_context(self):
         self.assertIn(sync_context.SOURCE, (sync_context.LOCAL_SOURCE, sync_context.EXAMPLE_SOURCE))
 
-    def test_sync_targets_are_workspace_local(self):
-        self.assertEqual(sync_context.TARGETS, (
+    def test_sync_targets_include_workspace_and_codex_global(self):
+        self.assertEqual(sync_context.TARGETS[:2], (
             os.path.join(sync_context.lib.WORKSPACE_ROOT, "CLAUDE.md"),
             os.path.join(sync_context.lib.WORKSPACE_ROOT, "AGENTS.md"),
         ))
+        if os.path.isdir(sync_context.CODEX_HOME):
+            self.assertEqual(sync_context.TARGETS[2], sync_context.CODEX_GLOBAL)
 
     def test_first_sync_wraps_managed_block(self):
         updated = sync_context.replace_managed_block("", "# rules\n")
@@ -137,6 +157,12 @@ class ContextSyncTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             sync_context.replace_managed_block(
                 "%s\nold\n" % sync_context.BEGIN, "# new\n")
+
+    def test_repo_table_placeholder_is_rendered(self):
+        rendered = sync_context.render_source("a\n%s\nb\n" % sync_context.REPO_TABLE_PLACEHOLDER)
+        self.assertNotIn(sync_context.REPO_TABLE_PLACEHOLDER, rendered)
+        self.assertTrue(rendered.startswith("a\n"))
+        self.assertTrue(rendered.endswith("\nb\n"))
 
 
 if __name__ == "__main__":

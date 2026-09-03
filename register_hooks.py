@@ -1,39 +1,26 @@
 #!/usr/bin/env python3
-"""~/.claude/settings.json에 공용 workspace 하네스 훅을 멱등하게 등록."""
+"""~/.claude/settings.json에 하네스 훅을 멱등하게 등록한다. 목록은 hooks_manifest.py."""
 import json
 import os
 
+import hooks_manifest as manifest
+
 SETTINGS = os.path.expanduser("~/.claude/settings.json")
-HARNESS = os.path.expanduser("~/.claude/hooks/workspace-harness")
-INCOMPATIBLE_PLUGIN = "superpowers@claude-plugins-official"
-
-ENTRIES = [
-    ("SessionStart", None, "repo_map.py", 10),
-    ("PostToolUse", "Edit|Write|NotebookEdit|Bash", "verify_gate.py", 5),
-    ("Stop", None, "verify_gate.py", 5),
-]
-
-OWNED_SCRIPTS = {
-    "repo_map.py", "quick_bypass.py", "plan_gate.py", "bash_gate.py",
-    "plan_marker.py", "verify_gate.py", "obsidian_scheduler.py",
-}
+HARNESS = manifest.HARNESS
 
 
 def is_owned_handler(handler):
-    command = handler.get("command", "")
-    return any(command.endswith("/" + script) for script in OWNED_SCRIPTS)
+    return manifest.is_owned_command(handler.get("command", ""))
 
 
-def update_settings(settings):
-    """소유 handler만 교체하고 같은 matcher 그룹의 타 훅은 보존한다."""
-    settings.setdefault("enabledPlugins", {})[INCOMPATIBLE_PLUGIN] = False
-    hooks = settings.setdefault("hooks", {})
+def remove_owned(hooks):
+    """소유 handler만 제거하고 같은 matcher 그룹의 타 훅은 보존한다."""
     removed = 0
     for event in list(hooks):
         kept_entries = []
         for entry in hooks[event]:
             handlers = entry.get("hooks", [])
-            kept_handlers = [handler for handler in handlers if not is_owned_handler(handler)]
+            kept_handlers = [h for h in handlers if not is_owned_handler(h)]
             removed += len(handlers) - len(kept_handlers)
             if kept_handlers:
                 entry["hooks"] = kept_handlers
@@ -42,19 +29,23 @@ def update_settings(settings):
             hooks[event] = kept_entries
         else:
             del hooks[event]
+    return removed
 
+
+def update_settings(settings):
+    hooks = settings.setdefault("hooks", {})
+    removed = remove_owned(hooks)
     installed = []
-    for event, matcher, script, timeout in ENTRIES:
-        command = "python3 %s/%s" % (HARNESS, script)
+    for spec in manifest.HOOKS:
         entry = {"hooks": [{
             "type": "command",
-            "command": command,
-            "timeout": timeout,
+            "command": manifest.claude_command(spec["script"]),
+            "timeout": spec["timeout"],
         }]}
-        if matcher:
-            entry["matcher"] = matcher
-        hooks.setdefault(event, []).append(entry)
-        installed.append("%s:%s" % (event, script))
+        if spec.get("claude_matcher"):
+            entry["matcher"] = spec["claude_matcher"]
+        hooks.setdefault(spec["event"], []).append(entry)
+        installed.append("%s:%s" % (spec["event"], spec["script"]))
     return removed, installed
 
 

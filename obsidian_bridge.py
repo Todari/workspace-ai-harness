@@ -1,30 +1,14 @@
 #!/usr/bin/env python3
 """SessionStart: 레포 작업 시 옵시디언 프로젝트 노트의 '다음 할 일'을 컨텍스트로 주입."""
-import json
 import os
 import re
 import signal
 import subprocess
 
 import harness_lib as lib
+import repos
 
 VAULT = lib.VAULT_ROOT
-
-# git 루트 디렉토리명 → 볼트 노트 경로 (볼트 루트 기준)
-REPO_TO_NOTE = {
-    "todari": "프로젝트/todari.md",
-    "lovetype": "프로젝트/lvti.md",
-    "2024-haeng-dong": "프로젝트/haengdong.md",
-    "metro-nomedeul": "프로젝트/metronomdeul.md",
-    "react-pixel-ui": "프로젝트/react-pixel-ui.md",
-    "trade-tower": "프로젝트/trade-tower.md",
-    # 전용 지식베이스를 가진 프로젝트는 그 폴더의 허브 노트가 대상이다.
-    "forcletter": "포크레터/포크레터.md",
-    # 이정표(모두의 창업 출품작) — 전용 폴더의 허브 노트가 대상.
-    # 레포는 basetie에서 jeongpyo로 리브랜딩 중이라 로컬 디렉토리명이 둘 다 존재할 수 있다.
-    "jeongpyo": "이정표/이정표.md",
-    "basetie": "이정표/이정표.md",
-}
 
 
 def repo_basename(cwd):
@@ -39,13 +23,8 @@ def repo_basename(cwd):
 
 
 def note_path_for(base):
-    if base in REPO_TO_NOTE:
-        return REPO_TO_NOTE[base]
-    # forcletter-seo 등 워크트리/사본 디렉토리
-    for prefix, rel in REPO_TO_NOTE.items():
-        if base.startswith(prefix + "-"):
-            return rel
-    return ""
+    """레포 디렉토리명 → 볼트 노트 상대 경로. 매핑은 repos.json의 vault_note가 정본."""
+    return repos.vault_note_for(base) if base else ""
 
 
 def read_with_timeout(path, seconds=3):
@@ -163,7 +142,12 @@ def main():
     else:
         parts.append("'다음 할 일'은 비어 있음.")
 
-    index = knowledge_index(note_path)
+    try:
+        index = knowledge_index(note_path)
+    except OSError as exc:
+        # iCloud 폴더 권한·dataless 문제로 인덱스만 실패해도 나머지 컨텍스트는 내보낸다.
+        lib.log("obsidian_bridge: knowledge_index skipped: %s" % exc)
+        index = ""
     if index:
         parts.append(
             "이 프로젝트는 볼트에도 기록을 둔다. 무엇이 볼트 담당이고 무엇이 레포 담당인지는 "
@@ -179,12 +163,7 @@ def main():
 
     text = "\n\n".join(parts)
     lib.event("obsidian-bridge", data.get("session_id", ""), rel)
-    print(json.dumps({
-        "hookSpecificOutput": {
-            "hookEventName": "SessionStart",
-            "additionalContext": text,
-        }
-    }, ensure_ascii=False))
+    print(lib.hook_output("SessionStart", text))
 
 
 if __name__ == "__main__":

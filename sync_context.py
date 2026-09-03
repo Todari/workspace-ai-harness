@@ -1,9 +1,18 @@
 #!/usr/bin/env python3
-"""저장소의 공통 지침을 workspace 로컬 Claude/Codex 문서에 동기화."""
+"""저장소의 공통 지침을 Claude/Codex 지침 문서에 동기화.
+
+대상:
+- workspace `CLAUDE.md` — Claude Code는 부모 디렉토리의 CLAUDE.md를 상속하므로 레포 세션에서도 보인다.
+- workspace `AGENTS.md` — Codex는 git 루트 위의 AGENTS.md를 읽지 않으므로 workspace 루트 세션에서만 보인다.
+- `~/.codex/AGENTS.md` — Codex 전역 지침. 레포 세션의 Codex가 공통 규칙을 보는 유일한 경로.
+
+원본의 `<!-- workspace-harness: repo-table -->` 줄은 repos.json으로 만든 레포 표로 치환된다.
+"""
 import os
 import re
 
 import harness_lib as lib
+import repos
 
 
 HARNESS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -13,15 +22,26 @@ SOURCE = os.path.realpath(os.path.expanduser(os.environ.get(
     "WORKSPACE_HARNESS_CONTEXT_FILE",
     LOCAL_SOURCE if os.path.exists(LOCAL_SOURCE) else EXAMPLE_SOURCE,
 )))
+CODEX_HOME = os.path.realpath(os.path.expanduser(os.environ.get("CODEX_HOME", "~/.codex")))
+CODEX_GLOBAL = os.path.join(CODEX_HOME, "AGENTS.md")
 TARGETS = (
     os.path.join(lib.WORKSPACE_ROOT, "CLAUDE.md"),
     os.path.join(lib.WORKSPACE_ROOT, "AGENTS.md"),
-)
+) + ((CODEX_GLOBAL,) if os.path.isdir(CODEX_HOME) else ())
 BEGIN = "<!-- BEGIN workspace-harness: synced from context/workspace.md -->"
 LEGACY_BEGIN_RE = re.compile(
     r"<!-- BEGIN workspace-harness: synced from .+?/CLAUDE\.md -->"
 )
 END = "<!-- END workspace-harness -->"
+REPO_TABLE_PLACEHOLDER = "<!-- workspace-harness: repo-table -->"
+
+
+def render_source(content):
+    """원본의 레포 표 자리표시자를 레지스트리 표로 치환한다. 레지스트리가 없으면 줄을 지운다."""
+    if REPO_TABLE_PLACEHOLDER not in content:
+        return content
+    table = repos.markdown_table()
+    return content.replace(REPO_TABLE_PLACEHOLDER, table)
 
 
 def replace_managed_block(current, content):
@@ -60,12 +80,30 @@ def sync_target(target, content):
     return True
 
 
-def main():
+def rendered_source():
     with open(SOURCE, encoding="utf-8") as f:
-        content = f.read()
+        return render_source(f.read())
+
+
+def is_synced(target, content=None):
+    """대상의 관리 블록이 현재 원본과 같으면 True (doctor용, 쓰지 않음)."""
+    content = rendered_source() if content is None else content
+    try:
+        with open(target, encoding="utf-8") as f:
+            current = f.read()
+    except OSError:
+        return False
+    try:
+        return replace_managed_block(current, content) == current
+    except ValueError:
+        return False
+
+
+def main():
+    content = rendered_source()
     changed = [target for target in TARGETS if sync_target(target, content)]
     if not changed:
-        print("workspace CLAUDE.md and AGENTS.md already synchronized")
+        print("instruction files already synchronized: %s" % ", ".join(TARGETS))
         return
     print("synchronized: %s" % ", ".join(changed))
 

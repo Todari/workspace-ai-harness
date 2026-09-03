@@ -9,9 +9,8 @@ import os
 import re
 import time
 
+import edit_detect
 import harness_lib as lib
-import plan_gate
-import bash_gate
 
 VERIFY_DIR = os.path.join(lib.CACHE_DIR, "verify-gate")
 PATH_EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
@@ -60,7 +59,7 @@ def record(session_id, key):
     state[key] = time.time()
     with open(_state_path(session_id), "w", encoding="utf-8") as f:
         json.dump(state, f)
-    lib.prune_old_files(VERIFY_DIR, lib.MARKER_TTL_SECONDS)
+    lib.prune_old_files(VERIFY_DIR, lib.STATE_TTL_SECONDS)
 
 
 def is_verify_command(command):
@@ -81,7 +80,7 @@ def _command_segments(command):
     while i < len(lines):
         line = lines[i]
         current = []
-        for token in bash_gate._tokens(line):
+        for token in edit_detect.tokens(line):
             if token in ("|", "||", "&&", ";"):
                 if current:
                     segments.append(current)
@@ -91,7 +90,7 @@ def _command_segments(command):
         if current:
             segments.append(current)
 
-        delimiter = bash_gate.heredoc_delimiter(line)
+        delimiter = edit_detect.heredoc_delimiter(line)
         if delimiter is not None:
             i += 1
             while i < len(lines) and lines[i].strip() != delimiter:
@@ -212,7 +211,7 @@ def patch_paths(patch):
 
 
 def is_verification_relevant_path(path):
-    if not path or plan_gate.is_allowed_path(path):
+    if not path or not edit_detect.is_workspace_source(os.path.realpath(path)):
         return False
     name = os.path.basename(path).lower()
     return name not in NON_SOURCE_DOC_NAMES and not name.endswith(NON_SOURCE_DOC_SUFFIXES)
@@ -221,7 +220,9 @@ def is_verification_relevant_path(path):
 def is_source_edit(tool_name, tool_input, cwd=""):
     tool_input = tool_input or {}
     if tool_name in PATH_EDIT_TOOLS:
-        path = plan_gate.target_path(tool_input)
+        path = edit_detect.target_path(tool_input)
+        if path and not os.path.isabs(path):
+            path = os.path.join(cwd, path)
         return is_verification_relevant_path(path)
     if tool_name in PATCH_EDIT_TOOLS:
         # Codex canonical schema uses `command`; Claude-compatible adapters may use patch/input.
@@ -233,7 +234,7 @@ def is_source_edit(tool_name, tool_input, cwd=""):
         absolute = [p if os.path.isabs(p) else os.path.join(cwd, p) for p in paths]
         return any(is_verification_relevant_path(p) for p in absolute)
     if tool_name in SHELL_TOOLS:
-        return bool(bash_gate.find_write_target(command_from(tool_input), cwd))
+        return bool(edit_detect.find_write_target(command_from(tool_input), cwd))
     return False
 
 
@@ -261,8 +262,6 @@ def handle(data):
     if event == "Stop":
         if data.get("stop_hook_active"):
             return None  # 이미 한 번 차단했음 — 무한 루프 방지
-        if lib.marker_reason(session_id) == "user-bypass":
-            return None
         state = load_state(session_id)
         if state.get("last_edit", 0) and \
                 state.get("last_verify", 0) < state.get("last_edit", 0) and \

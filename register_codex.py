@@ -1,43 +1,47 @@
 #!/usr/bin/env python3
-"""~/.codex/config.toml에 공용 workspace 하네스 훅을 멱등하게 등록."""
-import hashlib
+"""~/.codex/config.toml에 하네스 훅을 멱등하게 등록한다. 목록은 hooks_manifest.py.
+
+Codex는 훅 정의 해시로 신뢰를 기록한다. 스크립트가 바뀌면 `--harness-rev`가 달라져
+재승인을 요구하므로, 코드 수정 뒤에는 이 스크립트를 다시 실행해야 한다(doctor.py가 검사).
+"""
 import os
 import re
 
+import hooks_manifest as manifest
 
 CONFIG = os.path.expanduser("~/.codex/config.toml")
-HARNESS = os.path.expanduser("~/.claude/hooks/workspace-harness")
+HARNESS = manifest.HARNESS
 BEGIN = "# BEGIN workspace-harness (managed by register_codex.py)"
 END = "# END workspace-harness"
 
 
-def hook(script, timeout):
-    path = os.path.join(HARNESS, script)
-    with open(path, "rb") as f:
-        revision = hashlib.sha256(f.read()).hexdigest()[:16]
-    command = "python3 %s --harness-rev=%s" % (path, revision)
-    return ('{ type = "command", command = "%s", async = false, '
-            'timeout = %d }' % (command, timeout))
+def hook_toml(script, timeout):
+    return ('{ type = "command", command = "%s", async = false, timeout = %d }'
+            % (manifest.codex_command(script), timeout))
 
 
-# Codex 0.144 제약 두 가지:
-#  - async 훅 미지원("async hooks are not supported yet") — 모델 컨텍스트와 직접 관련 없는
-#    스케줄러는 SessionStart에 등록하지 않는다.
-#  - subagent_start 이벤트 없음 — vault_subagent.py는 Claude 전용으로 남는다.
-BLOCK = """%s
-[hooks]
-SessionStart = [
-  { hooks = [%s, %s] }
-]
-PostToolUse = [
-  { matcher = "^(Bash|apply_patch|Edit|Write)$", hooks = [%s] }
-]
-Stop = [
-  { hooks = [%s] }
-]
-%s
-""" % (BEGIN, hook("repo_map.py", 10), hook("obsidian_bridge.py", 10),
-       hook("verify_gate.py", 5), hook("verify_gate.py", 5), END)
+def build_block():
+    by_event = {}
+    for spec in manifest.HOOKS:
+        by_event.setdefault(spec["event"], {}).setdefault(
+            spec.get("codex_matcher"), []).append(spec)
+    lines = [BEGIN, "[hooks]"]
+    for event, groups in by_event.items():
+        items = []
+        for matcher, specs in groups.items():
+            hooks = ", ".join(hook_toml(s["script"], s["timeout"]) for s in specs)
+            if matcher:
+                items.append('  { matcher = "%s", hooks = [%s] }' % (matcher, hooks))
+            else:
+                items.append("  { hooks = [%s] }" % hooks)
+        lines.append("%s = [" % event)
+        lines.append(",\n".join(items))
+        lines.append("]")
+    lines.append(END)
+    return "\n".join(lines) + "\n"
+
+
+BLOCK = build_block()
 
 
 def remove_managed_block(text):

@@ -1,4 +1,7 @@
+import json
+import os
 import tempfile
+import time
 import unittest
 
 import harness_lib as lib
@@ -8,13 +11,13 @@ ROOT = lib.WORKSPACE_ROOT
 
 class InWorkspaceTest(unittest.TestCase):
     def test_inside(self):
-        self.assertTrue(lib.in_workspace(lib.os.path.join(ROOT, "projects", "demo")))
+        self.assertTrue(lib.in_workspace(os.path.join(ROOT, "projects", "demo")))
 
     def test_root_itself(self):
         self.assertTrue(lib.in_workspace(ROOT))
 
     def test_outside(self):
-        self.assertFalse(lib.in_workspace(lib.os.path.join(lib.os.path.dirname(ROOT), "other")))
+        self.assertFalse(lib.in_workspace(os.path.join(os.path.dirname(ROOT), "other")))
 
     def test_prefix_trick(self):
         self.assertFalse(lib.in_workspace(ROOT + "-evil"))
@@ -23,57 +26,28 @@ class InWorkspaceTest(unittest.TestCase):
         self.assertFalse(lib.in_workspace(""))
 
 
-class MarkerTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.orig = lib.MARKER_DIR
-        lib.MARKER_DIR = self.tmp.name
-
-    def tearDown(self):
-        lib.MARKER_DIR = self.orig
-        self.tmp.cleanup()
-
-    def test_set_and_has(self):
-        self.assertFalse(lib.has_marker("s1"))
-        lib.set_marker("s1", "user-bypass")
-        self.assertTrue(lib.has_marker("s1"))
-
-    def test_empty_session_id_is_noop(self):
-        lib.set_marker("", "x")
-        self.assertFalse(lib.has_marker(""))
-
-    def test_marker_reason_roundtrip(self):
-        lib.set_marker("s2", "plan-doc:/x/y.md")
-        self.assertEqual(lib.marker_reason("s2"), "plan-doc:/x/y.md")
-
-    def test_marker_reason_missing_is_none(self):
-        self.assertIsNone(lib.marker_reason("never-existed"))
-        self.assertIsNone(lib.marker_reason(""))
-
-
-class PruneOldMarkersTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.orig = lib.MARKER_DIR
-        lib.MARKER_DIR = self.tmp.name
-
-    def tearDown(self):
-        lib.MARKER_DIR = self.orig
-        self.tmp.cleanup()
-
+class PruneOldFilesTest(unittest.TestCase):
     def test_removes_old_keeps_fresh(self):
-        lib.set_marker("old-session", "user-bypass")
-        lib.set_marker("fresh-session", "user-bypass")
-        old_path = lib._marker_path("old-session")
-        stale = lib.os.path.getmtime(old_path) - lib.MARKER_TTL_SECONDS - 60
-        lib.os.utime(old_path, (stale, stale))
-        lib.prune_old_markers()
-        self.assertFalse(lib.has_marker("old-session"))
-        self.assertTrue(lib.has_marker("fresh-session"))
+        with tempfile.TemporaryDirectory() as d:
+            old = os.path.join(d, "old")
+            fresh = os.path.join(d, "fresh")
+            for path in (old, fresh):
+                open(path, "w").close()
+            stale = time.time() - lib.STATE_TTL_SECONDS - 60
+            os.utime(old, (stale, stale))
+            lib.prune_old_files(d, lib.STATE_TTL_SECONDS)
+            self.assertFalse(os.path.exists(old))
+            self.assertTrue(os.path.exists(fresh))
 
     def test_missing_dir_is_noop(self):
-        lib.MARKER_DIR = self.tmp.name + "/nonexistent"
-        lib.prune_old_markers()  # 예외 없이 통과해야 함
+        lib.prune_old_files("/nonexistent/dir", 10)  # 예외 없이 통과해야 함
+
+
+class HookOutputTest(unittest.TestCase):
+    def test_shape(self):
+        out = json.loads(lib.hook_output("SessionStart", "안녕"))
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        self.assertEqual(out["hookSpecificOutput"]["additionalContext"], "안녕")
 
 
 class LogCapTest(unittest.TestCase):
@@ -90,9 +64,9 @@ class LogCapTest(unittest.TestCase):
         with open(lib.LOG_PATH, "w") as f:
             for i in range(20000):
                 f.write("line %d padding-padding-padding-padding-padding\n" % i)
-        self.assertGreater(lib.os.path.getsize(lib.LOG_PATH), lib.MAX_LOG_BYTES)
+        self.assertGreater(os.path.getsize(lib.LOG_PATH), lib.MAX_LOG_BYTES)
         lib.log("after-cap")
-        size = lib.os.path.getsize(lib.LOG_PATH)
+        size = os.path.getsize(lib.LOG_PATH)
         self.assertLess(size, lib.MAX_LOG_BYTES)
         with open(lib.LOG_PATH) as f:
             content = f.read()
@@ -112,25 +86,24 @@ class EventLogTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_writes_parseable_jsonl(self):
-        import json
-        lib.event("plan-deny", "abcdef123456", "/x/y.ts")
-        lib.event("quick-bypass", "abcdef123456")
+        lib.event("map-inject", "abcdef123456", "todari:1200")
+        lib.event("verify-block", "abcdef123456")
         with open(lib.EVENTS_PATH) as f:
             lines = f.read().splitlines()
         self.assertEqual(len(lines), 2)
         first = json.loads(lines[0])
-        self.assertEqual(first["kind"], "plan-deny")
+        self.assertEqual(first["kind"], "map-inject")
         self.assertEqual(first["session"], "abcdef12")  # 8자로 절단
-        self.assertEqual(first["detail"], "/x/y.ts")
+        self.assertEqual(first["detail"], "todari:1200")
         self.assertIn("t", first)
 
     def test_truncates_when_over_cap(self):
         with open(lib.EVENTS_PATH, "w") as f:
             for i in range(40000):
                 f.write('{"kind":"old","i":%d,"pad":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}\n' % i)
-        self.assertGreater(lib.os.path.getsize(lib.EVENTS_PATH), lib.MAX_EVENTS_BYTES)
+        self.assertGreater(os.path.getsize(lib.EVENTS_PATH), lib.MAX_EVENTS_BYTES)
         lib.event("new-kind", "s")
-        self.assertLess(lib.os.path.getsize(lib.EVENTS_PATH), lib.MAX_EVENTS_BYTES)
+        self.assertLess(os.path.getsize(lib.EVENTS_PATH), lib.MAX_EVENTS_BYTES)
         with open(lib.EVENTS_PATH) as f:
             content = f.read()
         self.assertIn("new-kind", content)

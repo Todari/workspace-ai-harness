@@ -23,15 +23,10 @@ class VerifyGateTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.orig_dir = verify_gate.VERIFY_DIR
         verify_gate.VERIFY_DIR = self.tmp.name
-        self.mtmp = tempfile.TemporaryDirectory()
-        self.orig_marker = lib.MARKER_DIR
-        lib.MARKER_DIR = self.mtmp.name
 
     def tearDown(self):
         verify_gate.VERIFY_DIR = self.orig_dir
-        lib.MARKER_DIR = self.orig_marker
         self.tmp.cleanup()
-        self.mtmp.cleanup()
 
     def edit(self, path=CWD + "/src/page.tsx"):
         return verify_gate.handle(ev(
@@ -73,16 +68,6 @@ class VerifyGateTest(unittest.TestCase):
         self.edit()
         self.assertIsNone(self.stop(stop_hook_active=True))
 
-    def test_user_bypass_marker_allows_stop(self):
-        self.edit()
-        lib.set_marker("vg-test", "user-bypass")
-        self.assertIsNone(self.stop())
-
-    def test_plan_doc_marker_does_not_bypass(self):
-        self.edit()
-        lib.set_marker("vg-test", "plan-doc:/x.md")
-        self.assertEqual(self.stop()["decision"], "block")
-
     def test_docs_edit_not_tracked(self):
         self.edit(path=CWD + "/docs/plans/x.md")
         self.assertIsNone(self.stop())
@@ -98,6 +83,10 @@ class VerifyGateTest(unittest.TestCase):
                               tool_name="Edit",
                               tool_input={"file_path": "/elsewhere/a.ts"}))
         self.assertIsNone(self.stop(cwd="/elsewhere"))
+
+    def test_external_path_from_workspace_cwd_is_ignored(self):
+        self.edit(path="/etc/example.ts")
+        self.assertIsNone(self.stop())
 
     def test_verify_before_edit_still_blocks(self):
         self.bash("npx tsc --noEmit")

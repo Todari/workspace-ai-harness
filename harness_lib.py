@@ -6,6 +6,7 @@ import sys
 import time
 import traceback
 
+
 def configured_path(env_name, default):
     """환경변수 경로를 `~` 확장·정규화해 반환한다."""
     return os.path.realpath(os.path.expanduser(os.environ.get(env_name, default)))
@@ -18,9 +19,8 @@ VAULT_ROOT = configured_path(
 )
 CACHE_DIR = configured_path("WORKSPACE_HARNESS_CACHE_DIR", "~/.claude/cache")
 LOG_PATH = os.path.join(CACHE_DIR, "harness.log")
-MARKER_DIR = os.path.join(CACHE_DIR, "plan-gate")
 MAP_CACHE_DIR = os.path.join(CACHE_DIR, "repo-maps")
-MARKER_TTL_SECONDS = 7 * 24 * 3600
+STATE_TTL_SECONDS = 7 * 24 * 3600
 MAX_LOG_BYTES = 512 * 1024
 LOG_KEEP_LINES = 200
 EVENTS_PATH = os.path.join(CACHE_DIR, "harness-events.jsonl")
@@ -69,30 +69,21 @@ def read_hook_input():
         return {}
 
 
+def hook_output(event_name, text):
+    """additionalContext를 주입하는 훅 출력 JSON 문자열."""
+    return json.dumps({
+        "hookSpecificOutput": {
+            "hookEventName": event_name,
+            "additionalContext": text,
+        }
+    }, ensure_ascii=False)
+
+
 def in_workspace(cwd):
     if not cwd:
         return False
     real = os.path.realpath(cwd)
     return real == WORKSPACE_ROOT or real.startswith(WORKSPACE_ROOT + os.sep)
-
-
-def _marker_path(session_id):
-    safe = session_id.replace(os.sep, "_")
-    return os.path.join(MARKER_DIR, safe)
-
-
-def set_marker(session_id, reason):
-    if not session_id:
-        return
-    os.makedirs(MARKER_DIR, exist_ok=True)
-    with open(_marker_path(session_id), "w", encoding="utf-8") as f:
-        f.write(reason)
-    prune_old_markers()
-
-
-def prune_old_markers():
-    """TTL 지난 세션 마커 삭제 (마커 생성 시점마다 호출돼 축적을 막음)."""
-    prune_old_files(MARKER_DIR, MARKER_TTL_SECONDS)
 
 
 def prune_old_files(dirpath, ttl_seconds):
@@ -108,21 +99,6 @@ def prune_old_files(dirpath, ttl_seconds):
                 os.remove(path)
         except OSError:
             pass
-
-
-def has_marker(session_id):
-    return bool(session_id) and os.path.exists(_marker_path(session_id))
-
-
-def marker_reason(session_id):
-    """마커 파일 내용(사유 문자열). 없으면 None."""
-    if not session_id:
-        return None
-    try:
-        with open(_marker_path(session_id), encoding="utf-8") as f:
-            return f.read().strip()
-    except OSError:
-        return None
 
 
 def run_fail_open(fn):

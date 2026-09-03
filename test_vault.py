@@ -13,7 +13,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SEARCH = os.path.join(HERE, "vault_search.py")
 BRIDGE = os.path.join(HERE, "obsidian_bridge.py")
 SUBAGENT = os.path.join(HERE, "vault_subagent.py")
-SCHEDULER = os.path.join(HERE, "obsidian_scheduler.py")
 VAULT = lib.VAULT_ROOT
 HAS_VAULT = os.path.isdir(VAULT)
 
@@ -116,11 +115,14 @@ class KnowledgeIndexTest(unittest.TestCase):
     def test_index_lists_only_nonempty_folders(self):
         with tempfile.TemporaryDirectory() as d:
             hub = os.path.join(d, "허브.md")
-            open(hub, "w").write("x")
+            with open(hub, "w") as f:
+                f.write("x")
             os.makedirs(os.path.join(d, "기술"))
             os.makedirs(os.path.join(d, "빈폴더"))
-            open(os.path.join(d, "기술", "스택 선정.md"), "w").write("x")
-            open(os.path.join(d, "_용어집.md"), "w").write("x")
+            with open(os.path.join(d, "기술", "스택 선정.md"), "w") as f:
+                f.write("x")
+            with open(os.path.join(d, "_용어집.md"), "w") as f:
+                f.write("x")
             idx = self.b.knowledge_index(hub)
         self.assertIn("_용어집.md", idx)
         self.assertIn("기술/ (1건): 스택 선정", idx)
@@ -140,38 +142,6 @@ class SubagentHookTest(unittest.TestCase):
         ctx = json.loads(p.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertIn("vault_search.py", ctx)
         self.assertIn("쓰지 말 것", ctx)
-
-
-class SchedulerTest(unittest.TestCase):
-    def test_recursion_guard(self):
-        """자동화가 띄운 세션 안에서는 다시 실행하지 않는다."""
-        p = run(SCHEDULER, args=["--dry-run"], env={"OBSIDIAN_SCHED": "1"})
-        self.assertEqual(p.stdout.strip(), "")
-
-    @unittest.skipUnless(HAS_VAULT, "볼트 접근 불가")
-    def test_dry_run_decides_without_launching(self):
-        p = run(SCHEDULER, args=["--dry-run"])
-        self.assertRegex(p.stdout, r"(launch|skip): (weekly|vault_health|monthly)")
-
-    @unittest.skipUnless(HAS_VAULT, "볼트 접근 불가")
-    def test_inbox_line_present(self):
-        """인박스 따라잡기 결정이 항상 한 줄 나온다(launch/skip)."""
-        p = run(SCHEDULER, args=["--dry-run"])
-        self.assertRegex(p.stdout, r"(launch: inbox_sweep|skip: inbox)")
-
-    def test_throttled_helper(self):
-        """30분 내 확인 마커가 있으면 throttled=True."""
-        sys.path.insert(0, HERE)
-        import importlib, datetime as _dt
-        sched = importlib.import_module("obsidian_scheduler")
-        with tempfile.TemporaryDirectory() as d:
-            m = os.path.join(d, "mark")
-            now = _dt.datetime.now()
-            self.assertFalse(sched.throttled(m, 1800, now))  # 마커 없음 → 통과
-            sched.touch(m)
-            after = _dt.datetime.now()
-            self.assertTrue(sched.throttled(m, 1800, after))   # 방금 확인 → throttled
-            self.assertFalse(sched.throttled(m, 0, after))     # 임계 0 → 통과(age>=0)
 
 
 class OneLinerTest(unittest.TestCase):

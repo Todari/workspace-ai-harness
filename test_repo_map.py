@@ -209,11 +209,77 @@ class FingerprintTest(unittest.TestCase):
                 f.write("\n")
             self.assertNotEqual(before, repo_map.repo_fingerprint(d))
 
+    def test_dirty_source_outside_metadata_dirs_invalidates_fingerprint(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_fixture_repo(d)
+            source = os.path.join(d, "src.py")
+            with open(source, "w") as f:
+                f.write("before = True\n")
+            subprocess.run(["git", "-C", d, "add", "src.py"], check=True)
+            subprocess.run(
+                ["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-q", "-m", "add source"], check=True)
+            before = repo_map.repo_fingerprint(d)
+            with open(source, "a") as f:
+                f.write("after = True\n")
+            self.assertNotEqual(before, repo_map.repo_fingerprint(d))
+
 
 class RepoRootTest(unittest.TestCase):
     def test_non_git_falls_back_to_cwd(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(repo_map.repo_root(d), d)
+            self.assertEqual(repo_map.git_root(d), "")
+
+
+class LeanModeTest(unittest.TestCase):
+    """지침 파일이 있는 레포는 구조를 그 문서가 담당하므로 트리를 1 depth로 줄인다."""
+
+    def test_instruction_file_shrinks_tree(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_fixture_repo(d)
+            full = repo_map.build_map(d)
+            with open(os.path.join(d, "AGENTS.md"), "w") as f:
+                f.write("# rules\n")
+            lean = repo_map.build_map(d)
+        self.assertIn("- apps/client/", full)
+        self.assertNotIn("- apps/client/", lean)
+        self.assertIn("- apps/", lean)
+        self.assertIn("(1 depth)", lean)
+        self.assertIn("(2 depth)", full)
+
+
+class GroupIndexTest(unittest.TestCase):
+    """git 레포가 아닌 그룹 디렉토리는 하위 레포 요약을 준다."""
+
+    def test_group_rows_list_sub_repos_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_fixture_repo(os.path.join(d, "alpha"))
+            os.makedirs(os.path.join(d, "plain-dir"))
+            rows = repo_map.group_rows(d)
+            text = repo_map.build_group_map(d)
+        self.assertEqual(len(rows), 1)
+        self.assertIn("alpha/", rows[0])
+        self.assertIn("최근 커밋", rows[0])
+        self.assertNotIn("plain-dir", text)
+        self.assertIn("git 레포 아님", text)
+
+    def test_empty_group_is_blank(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(repo_map.build_group_map(d), "")
+
+    def test_group_rows_counts_untracked_changes(self):
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "alpha")
+            make_fixture_repo(repo)
+            subprocess.run(["git", "-C", repo, "add", "-A"], check=True)
+            subprocess.run(
+                ["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                 "commit", "-q", "-m", "fixture"], check=True)
+            with open(os.path.join(repo, "new.txt"), "w") as f:
+                f.write("new\n")
+            rows = repo_map.group_rows(d)
+        self.assertIn("변경 1개", rows[0])
 
 
 class ShouldInjectTest(unittest.TestCase):
