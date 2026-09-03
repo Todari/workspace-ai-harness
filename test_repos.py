@@ -66,6 +66,24 @@ class ActiveTest(unittest.TestCase):
         self.assertEqual(rows[0]["commits"], 1)
         self.assertFalse(rows[0]["registered"])
 
+    def test_worktree_of_same_repo_is_counted_once(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = os.path.realpath(d)
+            repo = os.path.join(ws, "linkive", "main-repo")
+            os.makedirs(repo)
+            subprocess.run(["git", "-C", repo, "init", "-q", "-b", "main"], check=True)
+            subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "--allow-empty", "-q", "-m", "c"], check=True)
+            subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "-b", "feat",
+                            os.path.join(ws, "linkive", "main-repo-feat")], check=True)
+            orig_ws, orig_reg = lib.WORKSPACE_ROOT, repos.REGISTRY
+            lib.WORKSPACE_ROOT, repos.REGISTRY = ws, "/nonexistent/repos.json"
+            try:
+                rows = repos.active(7)
+            finally:
+                lib.WORKSPACE_ROOT, repos.REGISTRY = orig_ws, orig_reg
+        self.assertEqual([row["path"] for row in rows], ["linkive/main-repo"])
+
 
 if __name__ == "__main__":
     unittest.main()

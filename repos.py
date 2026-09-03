@@ -91,13 +91,30 @@ def scan_git_dirs():
     return found
 
 
+def common_git_dir(path):
+    """워크트리는 .git 공용 디렉토리를 공유한다 — 같은 레포를 두 번 세지 않기 위한 키."""
+    common = git(path, "rev-parse", "--git-common-dir")
+    if not common:
+        return os.path.realpath(path)
+    if not os.path.isabs(common):
+        common = os.path.join(path, common)
+    return os.path.realpath(common)
+
+
 def active(days=7):
     registered = {os.path.realpath(abs_path(r)): r for r in load()}
     paths = dict(scan_git_dirs())
     for real, repo in registered.items():
         paths.setdefault(real, repo["path"])
+    # 등록 레포를 먼저 보고, 같은 레포의 워크트리(forcletter-* 등)는 건너뛴다.
+    ordered = sorted(paths.items(), key=lambda item: item[0] not in registered)
+    seen = set()
     rows = []
-    for real, rel in paths.items():
+    for real, rel in ordered:
+        common = common_git_dir(real)
+        if common in seen:
+            continue
+        seen.add(common)
         count = commits_since(real, days)
         if count <= 0:
             continue
