@@ -134,6 +134,21 @@ class SubagentHookTest(unittest.TestCase):
         p = run(SUBAGENT, stdin=json.dumps({"cwd": "/tmp"}))
         self.assertEqual(p.stdout.strip(), "")
 
+    def test_workflow_and_named_agents_are_silent(self):
+        """워크플로 워커·일회성 이름 에이전트에는 볼트 안내를 붙이지 않는다."""
+        for agent_type in ("workflow-subagent", "mid-arc-b", "opus-verifier"):
+            p = run(SUBAGENT, stdin=json.dumps(
+                {"cwd": os.path.join(lib.WORKSPACE_ROOT, "projects", "todari"),
+                 "agent_type": agent_type}))
+            self.assertEqual(p.stdout.strip(), "", agent_type)
+
+    @unittest.skipUnless(HAS_VAULT, "볼트 접근 불가")
+    def test_missing_agent_type_still_injects(self):
+        """agent_type을 주지 않는 런타임(Codex)은 종류를 모르므로 붙인다."""
+        p = run(SUBAGENT, stdin=json.dumps(
+            {"cwd": os.path.join(lib.WORKSPACE_ROOT, "projects", "todari")}))
+        self.assertIn("vault_search.py", p.stdout)
+
     @unittest.skipUnless(HAS_VAULT, "볼트 접근 불가")
     def test_injects_readonly_guidance(self):
         p = run(SUBAGENT, stdin=json.dumps(
