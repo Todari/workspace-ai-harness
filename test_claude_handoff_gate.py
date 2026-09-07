@@ -52,6 +52,13 @@ class ClassifierTest(unittest.TestCase):
             "응 그렇게 진행해줘", self.config, {"route": "direct", "reason": "short-question"})[0],
             "implement")
 
+    def test_question_mark_beats_action_verb(self):
+        self.assertEqual(self.route("이제 하네스가 효율적인 작업을 토큰을 아끼면서 진행해?"), "direct")
+        self.assertEqual(self.route("이 구조로 리팩터링하면 성능이 좋아져?"), "direct")
+
+    def test_question_mark_request_still_delegates(self):
+        self.assertEqual(self.route("로그인 버그 수정해줄래?"), "implement")
+
     def test_bypass_phrase_without_space(self):
         self.assertEqual(self.route("직접해줘. 커밋해줘."), "direct")
 

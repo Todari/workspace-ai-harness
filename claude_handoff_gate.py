@@ -33,6 +33,8 @@ STRONG_ACTION_RE = re.compile(
     r"(구현해|개선해|수정해|고쳐|추가해|변경해|적용해|업데이트해|리팩터링해|작성해|"
     r"만들어|삭제해|제거해|문서화해|마이그레이션해|진행해|implement\b|fix\b|add\b|"
     r"update\b|refactor\b|remove\b|create\b|migrate\b)", re.IGNORECASE)
+IMPERATIVE_RE = re.compile(r"(해\s*줘|해\s*줄래|해\s*주세요|해\s*주실|해\s*주라|해라|하자|"
+                           r"please\b|can you\b|could you\b)", re.IGNORECASE)
 QUESTION_RE = re.compile(r"(\?|맞아|어때|설명해|알려|추천해|괜찮아|should\b|what\b|why\b)",
                          re.IGNORECASE)
 INSPECT_RE = re.compile(
@@ -130,6 +132,9 @@ def classify_prompt(prompt, config, previous=None):
             # "응 그렇게 해줘"는 직전에 "직접 해줘"로 시작한 작업의 연속이다.
             return "direct", "follow-up-inherits-opt-out"
         return "implement", "action-follow-up"
+    if text.endswith("?") and not IMPERATIVE_RE.search(text):
+        # "…진행해?"처럼 행동어가 들어간 물음표 문장은 요청이 아니라 질문이다.
+        return "direct", "question-mark"
     mutation = bool(MUTATION_RE.search(text))
     inspection = bool(INSPECT_RE.search(text))
     code = bool(CODE_RE.search(text))
