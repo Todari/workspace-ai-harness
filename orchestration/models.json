@@ -26,10 +26,12 @@
   },
   "routing": {
     "mode": "hard_handoff",
+    "enforcement": "hard",
     "classifier_version": 1,
     "max_contract_chars": 3000,
     "max_planner_tool_calls": 2,
     "max_route_violations": 3,
+    "max_launch_failures": 2,
     "max_batch_worker_calls": 4,
     "max_concurrent_workers": 4,
     "worker_queue_timeout_seconds": 1800,

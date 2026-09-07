@@ -141,6 +141,13 @@ class GateDecisionTest(unittest.TestCase):
         self.assertFalse(gate.pre_tool(self.state, "Bash", {"command": self.WAIT},
                                        self.config)["continue"])
 
+    def test_advisory_enforcement_never_denies(self):
+        config = json.loads(json.dumps(self.config))
+        config["routing"]["enforcement"] = "advisory"
+        self.assertIsNone(gate.pre_tool(self.state, "Edit", {"file_path": "a.py"}, config))
+        self.assertIsNone(gate.stop_decision(self.state, config))
+        self.assertIn("CODEX_IMPLEMENT", gate.route_context("implement", self.state, config))
+
     def test_wait_before_run_is_denied(self):
         decision = gate.pre_tool(self.state, "Bash", {"command": self.WAIT}, self.config)
         self.assertEqual(decision["hookSpecificOutput"]["permissionDecision"], "deny")
@@ -208,6 +215,39 @@ class GateDecisionTest(unittest.TestCase):
         self.assertEqual(self.state["run_ids"], ["20260907-120000-abcdef"])
         decision = gate.pre_tool(self.state, "Read", {"file_path": "src/a.py"}, self.config)
         self.assertFalse(decision["continue"])
+
+    def test_failed_start_returns_slot_for_retry(self):
+        # 매니페스트 검증 실패: run_id 없이 {"status":"error"}만 돌아온다.
+        self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        gate.post_tool(self.state, "Bash", {"command": self.RUN},
+                       '{"status": "error", "error": "유효하지 않은 task_class: bugfix"}')
+        self.assertEqual(self.state["phase"], "planning")
+        self.assertEqual(self.state["worker_calls"], 0)
+        self.assertEqual(self.state["failed_starts"], 1)
+        self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        self.assertEqual(self.state["phase"], "delegated")
+        self.assertEqual(self.state["worker_calls"], 1)
+
+    def test_denied_start_without_post_event_returns_slot(self):
+        # 자동 모드 분류기가 거부하면 PostToolUse가 오지 않을 수 있다. 회수할 run_id가 없으면 재시도 허용.
+        self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        self.assertEqual(self.state["worker_calls"], 1)
+        self.assertEqual(self.state["failed_starts"], 1)
+
+    def test_failed_start_retry_is_capped(self):
+        for _ in range(self.config["routing"]["max_launch_failures"] + 1):
+            self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        denied = gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config)
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+
+    def test_detached_run_keeps_slot(self):
+        self.assertIsNone(gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config))
+        gate.post_tool(self.state, "Bash", {"command": self.RUN},
+                       '{"run_id":"20260907-120000-abcdef","status":"running"}')
+        denied = gate.pre_tool(self.state, "Bash", {"command": self.RUN}, self.config)
+        self.assertEqual(denied["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertEqual(self.state["worker_calls"], 1)
 
     def test_stop_requires_one_handoff_attempt(self):
         first = gate.stop_decision(self.state)

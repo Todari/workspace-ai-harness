@@ -62,6 +62,16 @@ python3 doctor.py
 같이 차단한다. 짧은 질문(80자 이하, 질문형)과 파일 하나를 지목한 짧은 요청은 Claude가 직접
 처리한다. Codex inspect 한 번이 수만 토큰·수 분이라 한 줄 질문에는 손해이기 때문이다.
 
+### 강제 수준 스위치
+
+`orchestration/models.json`의 `routing.enforcement`가 `hard`(기본)면 위임 턴에서 잘못된 도구를
+거부하고 Stop을 한 번 막는다. `advisory`로 바꾸면 라우트 안내만 주입하고 아무것도 거부하지 않는다.
+게이트가 작업을 반복해서 막는다고 느끼면 먼저 `advisory`로 낮추고 `stats.py`의 위임 턴 지표로
+원인을 본 뒤 되돌린다. 재등록 없이 파일 저장 즉시 적용된다.
+
+run 시작이 run_id 없이 실패하면(계약 검증 오류, 권한 분류기 거부) 결과가 아니라 시작 실패로 보고
+슬롯을 돌려준다. `routing.max_launch_failures`(기본 2)까지 같은 턴에서 다시 시작할 수 있다.
+
 ### detach → wait 프로토콜
 
 Claude Bash 도구는 한 호출을 최대 600초까지만 기다린다. 실측 Codex run은 중앙값 577초,

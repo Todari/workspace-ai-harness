@@ -192,12 +192,15 @@ def route_context(route, state, config):
     task_mode = "inspect" if route == "inspect" else "implement"
     effort = worker["inspection_effort"] if route == "inspect" else worker["default_effort"]
     return (
-        "[HARNESS ROUTE=CODEX_{label}] Do not inspect or edit the repository in Claude. From the user "
-        "request, create one manifest no longer than {chars} characters with task_mode={mode}, "
-        "task_class, objective, worker_effort={effort}, scope, acceptance_criteria, constraints, and "
-        "verification_commands. Start exactly once via stdin heredoc: `python3 {script} "
-        "run --repo <known-git-root> --orchestrator-session {session} "
-        "--manifest - --detach <<'JSON' ... JSON`. {common}"
+        "[HARNESS ROUTE=CODEX_{label}] Do not inspect or edit the repository in Claude, and do not "
+        "read codex_worker.py or its --help; the full contract shape is here. Create one manifest "
+        "no longer than {chars} characters with exactly these keys: task_mode=\"{mode}\", "
+        "task_class (simple|medium|complex|high_risk|batch_or_repo_wide), objective (string), "
+        "worker_effort=\"{effort}\", scope (repo-relative paths), acceptance_criteria (strings), "
+        "constraints (strings, optional), verification_commands (strings). No other keys. Start "
+        "exactly once via stdin heredoc: `python3 {script} run --repo <known-git-root> "
+        "--orchestrator-session {session} --manifest - --detach <<'JSON' {{...}} JSON`. If the run "
+        "command itself fails (exit 2), fix the manifest from the error and start again. {common}"
     ).format(label=route.upper(), script=WORKER_SCRIPT, chars=routing["max_contract_chars"],
              mode=task_mode, effort=effort, session=session, common=common)
 
@@ -324,9 +327,13 @@ def deny(reason, hard=False):
     }
 
 
+def enforcement(config):
+    return config["routing"].get("enforcement", "hard")
+
+
 def pre_tool(state, tool_name, tool_input, config):
     route = state.get("route", "direct")
-    if route == "direct":
+    if route == "direct" or enforcement(config) != "hard":
         return None
     phase = state.get("phase", "planning")
     routing = config["routing"]
@@ -357,6 +364,10 @@ def pre_tool(state, tool_name, tool_input, config):
             return None
         max_runs = routing["max_batch_worker_calls"] if route == "batch" else 1
         can_add_batch = route == "batch" and phase == "delegated" and not state.get("wait_calls")
+        if action == "run" and _release_failed_start(state, config):
+            # 직전 run이 run_id 없이 끝났다(형식 오류·권한 분류기 거부 등). 실제로 도는 worker가
+            # 없으므로 슬롯을 돌려주고 재시도를 허용한다(상한 MAX_FAILED_STARTS).
+            phase = state["phase"]
         if (action == "run" and (phase == "planning" or can_add_batch)
                 and state.get("worker_calls", 0) < max_runs):
             state["phase"] = "delegated"
@@ -386,6 +397,29 @@ def pre_tool(state, tool_name, tool_input, config):
         "넘기세요. " + run_template(session))
 
 
+MAX_FAILED_STARTS = 2
+
+
+def _release_failed_start(state, config=None):
+    """run이 detach에 실패한 상태(delegated인데 회수할 run_id가 없음)면 슬롯을 돌려준다.
+
+    PreToolUse가 worker_calls를 먼저 올리기 때문에, 매니페스트 검증 실패나 자동 모드 분류기의
+    거부처럼 프로세스가 run_id를 내지 못한 경우에도 슬롯이 소모돼 같은 요청 안에서 재시도가
+    막혔다. PostToolUse가 오지 않는 거부 경로까지 덮기 위해 PreToolUse에서도 판정한다.
+    """
+    if state.get("phase") != "delegated" or state.get("run_ids"):
+        return False
+    if state.get("worker_calls", 0) <= state.get("completed_calls", 0):
+        return False
+    limit = (config or {}).get("routing", {}).get("max_launch_failures", MAX_FAILED_STARTS)
+    if state.get("failed_starts", 0) >= limit:
+        return False
+    state["failed_starts"] = state.get("failed_starts", 0) + 1
+    state["worker_calls"] = state.get("worker_calls", 1) - 1
+    state["phase"] = "planning"
+    return True
+
+
 def _violation(state, config, reason):
     state["violations"] = state.get("violations", 0) + 1
     hard = state["violations"] > config["routing"]["max_route_violations"]
@@ -401,13 +435,15 @@ def _tool_response_text(response):
                     ("stdout", "stderr", "output", "content", "text"))
 
 
-def post_tool(state, tool_name, tool_input, tool_response):
+def post_tool(state, tool_name, tool_input, tool_response, config=None):
     if tool_name != "Bash":
         return
     action = worker_action((tool_input or {}).get("command", ""))
     if not action:
         return
     text = _tool_response_text(tool_response)
+    if action == "wait" and '"status"' not in text:
+        return  # wait 자체가 실패(잘못된 run ID 등)했으면 delegated를 유지해 재시도하게 둔다
     matches = re.findall(r'"run_id"\s*:\s*"([0-9]{8}-[0-9]{6}-[0-9a-f]{6})"', text)
     known = state.setdefault("run_ids", [])
     for run_id in matches:
@@ -416,6 +452,11 @@ def post_tool(state, tool_name, tool_input, tool_response):
     still_running = bool(re.search(r'"status"\s*:\s*"running"', text))
     if action == "run" and still_running:
         return  # detach 성공: wait로 회수할 때까지 delegated 유지
+    if action == "run" and not matches and not known:
+        # run_id 없이 끝난 run(매니페스트 오류·거부): 결과가 아니라 시작 실패다.
+        # 슬롯을 돌려주고 planning으로 되돌려 같은 요청 안에서 재시도할 수 있게 한다.
+        _release_failed_start(state, config)
+        return
     if action == "wait" and still_running:
         return  # wait 시간 초과: 같은 wait를 다시 호출한다
     if action == "wait":
@@ -426,7 +467,9 @@ def post_tool(state, tool_name, tool_input, tool_response):
                       else "delegated")
 
 
-def stop_decision(state):
+def stop_decision(state, config=None):
+    if config is not None and enforcement(config) != "hard":
+        return None
     if state.get("route") == "direct" or state.get("phase") == "result_ready":
         return None
     if state.get("stop_blocks", 0):
@@ -475,10 +518,10 @@ def handle(data, config=None):
             return decision
         if event in ("PostToolUse", "PostToolUseFailure"):
             post_tool(state, data.get("tool_name", ""), data.get("tool_input"),
-                      data.get("tool_response") or data.get("error"))
+                      data.get("tool_response") or data.get("error"), config)
             return None
         if event == "Stop":
-            decision = stop_decision(state)
+            decision = stop_decision(state, config)
             if decision:
                 lib.event("route-stop-block", key, state.get("route", ""))
             elif state.get("run_ids"):

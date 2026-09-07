@@ -105,11 +105,13 @@ def model_config_errors(data):
     else:
         if routing.get("mode") != "hard_handoff":
             errors.append("routing.mode는 hard_handoff여야 함")
+        if routing.get("enforcement", "hard") not in ("hard", "advisory"):
+            errors.append("routing.enforcement는 hard 또는 advisory여야 함")
         for key in ("classifier_version", "max_contract_chars",
                     "max_planner_tool_calls", "max_route_violations",
                     "max_batch_worker_calls", "max_concurrent_workers",
                     "worker_queue_timeout_seconds", "worker_timeout_seconds",
-                    "wait_timeout_seconds", "max_wait_calls"):
+                    "wait_timeout_seconds", "max_wait_calls", "max_launch_failures"):
             value = routing.get(key)
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:
                 errors.append("routing.%s는 1 이상의 정수여야 함" % key)
