@@ -1,10 +1,15 @@
 import copy
 import os
+import tempfile
 import unittest
 
+import claude_auto_route
+import claude_handoff_gate
+import codex_worker
 import hooks_manifest as manifest
 import register_codex
 import register_hooks
+import register_orchestration
 import sync_context
 
 
@@ -19,6 +24,14 @@ class ManifestTest(unittest.TestCase):
             self.assertTrue(manifest.is_owned_command("python3 /x/%s" % script))
         self.assertTrue(manifest.is_owned_command("python3 /x/repo_map.py --harness-rev=abc"))
         self.assertFalse(manifest.is_owned_command("python3 /x/other_hook.py"))
+
+    def test_auto_router_is_claude_only(self):
+        claude_scripts = {spec["script"] for spec in manifest.claude_hooks()}
+        codex_scripts = {spec["script"] for spec in manifest.codex_hooks()}
+        self.assertIn("claude_auto_route.py", claude_scripts)
+        self.assertIn("claude_handoff_gate.py", claude_scripts)
+        self.assertNotIn("claude_auto_route.py", codex_scripts)
+        self.assertNotIn("claude_handoff_gate.py", codex_scripts)
 
 
 class CodexRegistrationTest(unittest.TestCase):
@@ -43,9 +56,14 @@ class CodexRegistrationTest(unittest.TestCase):
         self.assertNotIn("exec_command|shell|unified_exec", register_codex.BLOCK)
 
     def test_codex_block_follows_manifest(self):
-        for spec in manifest.HOOKS:
+        for spec in manifest.codex_hooks():
             self.assertIn("%s = [" % spec["event"], register_codex.BLOCK)
             self.assertIn(manifest.codex_command(spec["script"]), register_codex.BLOCK)
+        codex_scripts = {spec["script"] for spec in manifest.codex_hooks()}
+        for spec in manifest.HOOKS:
+            if spec["script"] in codex_scripts:
+                continue
+            self.assertNotIn(manifest.codex_command(spec["script"]), register_codex.BLOCK)
         for script in manifest.RETIRED_SCRIPTS:
             self.assertNotIn(script, register_codex.BLOCK)
         # 모든 훅에 리비전이 붙어 코드가 바뀌면 Codex가 재승인을 요구한다
@@ -95,7 +113,7 @@ class ClaudeRegistrationTest(unittest.TestCase):
         self.assertIn("other_hook.py", serialized)
         self.assertNotIn("bash_gate.py", serialized)
         self.assertNotIn("obsidian_scheduler.py", serialized)
-        self.assertNotIn("PreToolUse", settings["hooks"])
+        self.assertIn("claude_handoff_gate.py", serialized)
         self.assertEqual(serialized.count("repo_map.py"), 1)
 
     def test_installs_every_manifest_entry(self):
@@ -119,6 +137,55 @@ class ClaudeRegistrationTest(unittest.TestCase):
         register_hooks.update_settings(settings)
         self.assertEqual(settings["enabledPlugins"],
                          {"frontend-design@claude-plugins-official": True})
+
+
+class AutoRouteContextTest(unittest.TestCase):
+    def test_context_uses_tracked_model_and_requires_no_command(self):
+        context = claude_auto_route.routing_context(codex_worker.load_config())
+        self.assertIn("hard Codex handoff v2", context)
+        self.assertIn("gpt-5.6-sol", context)
+        self.assertIn("직접 해줘", context)
+        self.assertIn("Never delegate again", context)
+
+
+class OrchestrationRegistrationTest(unittest.TestCase):
+    def test_updates_actual_fable_effort_without_touching_other_models(self):
+        settings = {
+            "model": "claude-fable-5-1[1m]",
+            "effortLevel": "xhigh",
+            "modelSettings": {"claude-sonnet-5": {"effortLevel": "high"}},
+        }
+        changed = register_orchestration.update_planner_effort(
+            settings, codex_worker.load_config())
+        self.assertTrue(changed)
+        self.assertEqual(settings["effortLevel"], "medium")
+        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"],
+                         "medium")
+        self.assertEqual(settings["modelSettings"]["claude-fable-5-1[1m]"]["effortLevel"],
+                         "medium")
+        self.assertEqual(settings["modelSettings"]["claude-sonnet-5"]["effortLevel"],
+                         "high")
+
+    def test_syncs_managed_assets_and_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+            source_path = os.path.join(source, "asset.md")
+            target_path = os.path.join(target, "nested", "asset.md")
+            with open(source_path, "w") as f:
+                f.write(register_orchestration.MANAGED_MARKER + "\ncontent\n")
+            self.assertEqual(register_orchestration.sync_asset(source_path, target_path), "created")
+            self.assertEqual(register_orchestration.sync_asset(source_path, target_path), "unchanged")
+            self.assertTrue(register_orchestration.is_synced(source_path, target_path))
+
+    def test_preserves_unmanaged_existing_asset(self):
+        with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
+            source_path = os.path.join(source, "asset.md")
+            target_path = os.path.join(target, "asset.md")
+            with open(source_path, "w") as f:
+                f.write(register_orchestration.MANAGED_MARKER + "\nnew\n")
+            with open(target_path, "w") as f:
+                f.write("personal\n")
+            with self.assertRaises(ValueError):
+                register_orchestration.sync_asset(source_path, target_path)
 
 
 class ContextSyncTest(unittest.TestCase):

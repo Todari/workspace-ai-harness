@@ -1,0 +1,110 @@
+{
+  "schema_version": 2,
+  "last_reviewed": "2026-09-07",
+  "review_interval_days": 90,
+  "planner": {
+    "provider": "anthropic",
+    "model": "fable",
+    "runtime_model": "claude-fable-5-1",
+    "default_effort": "medium",
+    "escalation_effort": "high",
+    "critical_effort": "xhigh",
+    "max_turns_before_handoff": 2,
+    "tested_cli_version": "2.1.263"
+  },
+  "worker": {
+    "provider": "openai",
+    "model": "gpt-5.6-sol",
+    "default_effort": "high",
+    "inspection_effort": "medium",
+    "escalation_effort": "xhigh",
+    "sandbox": "workspace-write",
+    "inspection_sandbox": "read-only",
+    "approval_policy": "never",
+    "ignore_user_config": true,
+    "tested_cli_version": "0.153.0"
+  },
+  "routing": {
+    "mode": "hard_handoff",
+    "classifier_version": 1,
+    "max_contract_chars": 3000,
+    "max_planner_tool_calls": 2,
+    "max_route_violations": 3,
+    "max_batch_worker_calls": 4,
+    "max_concurrent_workers": 4,
+    "worker_queue_timeout_seconds": 1800,
+    "worker_timeout_seconds": 1200,
+    "wait_timeout_seconds": 540,
+    "max_wait_calls": 8,
+    "delegate_task_classes": [
+      "medium",
+      "complex",
+      "high_risk",
+      "batch_or_repo_wide"
+    ],
+    "bypass_phrases": [
+      "직접 해줘",
+      "직접해줘",
+      "Claude가 직접 해줘",
+      "Codex 쓰지 마",
+      "위임하지 마"
+    ],
+    "forced_command": "/delegate-codex"
+  },
+  "history": [
+    {
+      "effective_date": "2026-09-03",
+      "planner_model": "fable",
+      "planner_effort": "high",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "high",
+      "routing_mode": "manual",
+      "reason": "Fable는 짧은 설계와 라우팅, Codex는 구현과 검증을 담당하는 초기 기준선",
+      "evidence": [
+        "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+        "https://developers.openai.com/codex/noninteractive"
+      ]
+    },
+    {
+      "effective_date": "2026-09-03",
+      "planner_model": "fable",
+      "planner_effort": "high",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "high",
+      "routing_mode": "automatic",
+      "reason": "일반 개발 요청은 자동 위임하고 명시적 직접 수행 문구와 소규모 변경만 Claude에 유지",
+      "evidence": [
+        "https://code.claude.com/docs/en/hooks",
+        "https://developers.openai.com/api/docs/guides/latest-model"
+      ]
+    },
+    {
+      "effective_date": "2026-09-07",
+      "planner_model": "fable",
+      "planner_effort": "medium",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "high",
+      "routing_mode": "hard_handoff",
+      "reason": "실측에서 Fable xhigh의 반복 탐색·폴링이 사용량을 지배해 요청별 하드 게이트와 실제 medium 기본값을 도입",
+      "evidence": [
+        "local Claude usage audit 2026-09-07",
+        "https://code.claude.com/docs/en/hooks",
+        "https://code.claude.com/docs/en/settings-reference#modelsettings",
+        "https://developers.openai.com/codex/noninteractive"
+      ]
+    },
+    {
+      "effective_date": "2026-09-07",
+      "planner_model": "fable",
+      "planner_effort": "medium",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "high",
+      "routing_mode": "hard_handoff",
+      "reason": "실측에서 Codex run 중앙값 577초·p90 1712초가 Claude Bash 600초 상한을 넘어 blocking 1회 호출이 성립하지 않았고, run_in_background 우회와 폴링이 재발함. run --detach + wait 회수 구조, repo lock 대기, worker timeout 1200초, 위반 허용 3회로 조정",
+      "evidence": [
+        "local Claude usage audit 2026-09-07 (codex-worker records, claude-handoff states)",
+        "https://code.claude.com/docs/en/hooks"
+      ]
+    }
+  ]
+}

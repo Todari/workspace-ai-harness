@@ -65,5 +65,80 @@ class ComplianceTest(unittest.TestCase):
             self.assertEqual(stats.verify_compliance(d), (1, 0))
 
 
+class CodexWorkerSummaryTest(unittest.TestCase):
+    def test_aggregates_routes_statuses_usage_and_duration(self):
+        with tempfile.TemporaryDirectory() as d:
+            records = (
+                {
+                    "created_at": "2026-09-03T10:00:00+09:00",
+                    "invocation_status": "completed",
+                    "worker_status": "completed",
+                    "model": "gpt-5.6-sol",
+                    "effort": "high",
+                    "duration_seconds": 10,
+                    "usage": {"input_tokens": 100, "cached_input_tokens": 80,
+                              "output_tokens": 20, "reasoning_output_tokens": 5},
+                },
+                {
+                    "created_at": "2026-09-03T10:10:00+09:00",
+                    "invocation_status": "failed",
+                    "worker_status": "unknown",
+                    "model": "gpt-5.6-sol",
+                    "effort": "xhigh",
+                    "duration_seconds": 30,
+                    "usage": {"input_tokens": 50, "output_tokens": 10},
+                },
+            )
+            for index, record in enumerate(records):
+                with open(os.path.join(d, "%d.json" % index), "w") as f:
+                    json.dump(record, f)
+            summary = stats.codex_worker_summary(d, since_ts=0)
+            self.assertEqual(summary["runs"], 2)
+            self.assertEqual(summary["statuses"]["completed"], 1)
+            self.assertEqual(summary["statuses"]["failed"], 1)
+            self.assertEqual(summary["usage"]["input_tokens"], 150)
+            self.assertEqual(summary["duration_seconds"], 40)
+
+
+class ClaudeUsageSummaryTest(unittest.TestCase):
+    def test_deduplicates_streamed_messages_and_groups_effort(self):
+        with tempfile.TemporaryDirectory() as d:
+            project = os.path.join(d, "project")
+            os.mkdir(project)
+            path = os.path.join(project, "session.jsonl")
+            base = {
+                "timestamp": "2026-09-07T10:00:00+09:00",
+                "uuid": "row-1",
+                "effort": "medium",
+                "isSidechain": False,
+                "message": {
+                    "id": "msg-1",
+                    "model": "claude-fable-5-1",
+                    "usage": {
+                        "input_tokens": 2,
+                        "cache_creation_input_tokens": 10,
+                        "cache_read_input_tokens": 20,
+                        "output_tokens": 30,
+                        "output_tokens_details": {"thinking_tokens": 12},
+                    },
+                },
+            }
+            sidechain = json.loads(json.dumps(base))
+            sidechain["uuid"] = "row-2"
+            sidechain["message"]["id"] = "msg-2"
+            sidechain["isSidechain"] = True
+            with open(path, "w") as f:
+                f.write(json.dumps(base) + "\n")
+                f.write(json.dumps(base) + "\n")  # streaming duplicate
+                f.write(json.dumps(sidechain) + "\n")
+            summary = stats.claude_usage_summary(d, since_ts=0)
+            self.assertEqual(summary["requests"], 2)
+            self.assertEqual(summary["sessions"], 1)
+            self.assertEqual(summary["sidechain_requests"], 1)
+            self.assertEqual(summary["routes"]["claude-fable-5-1/medium"], 2)
+            self.assertEqual(summary["usage"]["output_tokens"], 60)
+            self.assertEqual(summary["usage"]["thinking_tokens"], 24)
+
+
 if __name__ == "__main__":
     unittest.main()

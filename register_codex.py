@@ -22,7 +22,7 @@ def hook_toml(script, timeout):
 
 def build_block():
     by_event = {}
-    for spec in manifest.HOOKS:
+    for spec in manifest.codex_hooks():
         by_event.setdefault(spec["event"], {}).setdefault(
             spec.get("codex_matcher"), []).append(spec)
     lines = [BEGIN, "[hooks]"]

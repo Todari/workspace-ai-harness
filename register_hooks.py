@@ -36,7 +36,7 @@ def update_settings(settings):
     hooks = settings.setdefault("hooks", {})
     removed = remove_owned(hooks)
     installed = []
-    for spec in manifest.HOOKS:
+    for spec in manifest.claude_hooks():
         entry = {"hooks": [{
             "type": "command",
             "command": manifest.claude_command(spec["script"]),

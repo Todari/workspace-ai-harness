@@ -147,6 +147,33 @@ def scripts_lines(root, pkg, limit=12):
     return lines
 
 
+VERIFY_SCRIPT_NAMES = ("typecheck", "type-check", "tsc", "lint", "test", "build", "check")
+
+
+def verify_lines(root, pkg):
+    """계약 작성용 검증 명령 후보 한 줄. 레포를 읽지 않는 Claude가 verification_commands를 추측하지 않게 한다."""
+    commands = []
+    pm = detect_package_manager(root) or "npm"
+    runner = pm if pm != "npm" else "npm run"
+    scripts = pkg.get("scripts") or {}
+    for name in VERIFY_SCRIPT_NAMES:
+        if name in scripts:
+            commands.append("%s %s" % (runner, name))
+    if not scripts:
+        if any(os.path.exists(os.path.join(root, f))
+               for f in ("pytest.ini", "conftest.py", "setup.cfg")) \
+                or glob.glob(os.path.join(root, "test_*.py")) \
+                or os.path.isdir(os.path.join(root, "tests")):
+            commands.append("python3 -m pytest -q")
+        if os.path.exists(os.path.join(root, "go.mod")):
+            commands.append("go build ./... && go test ./...")
+        if os.path.exists(os.path.join(root, "Cargo.toml")):
+            commands.append("cargo check && cargo test")
+    if not commands:
+        return []
+    return ["- 검증 명령 후보: " + ", ".join("`%s`" % c for c in commands[:4])]
+
+
 def tree_lines(root, max_depth=2):
     lines = []
     base = root.rstrip(os.sep).count(os.sep)
@@ -290,6 +317,7 @@ def build_map(root):
     parts += stack_lines(root, pkg)
     parts += pointer_lines(root)
     parts += scripts_lines(root, pkg, limit=6 if lean else 12)
+    parts += verify_lines(root, pkg)
     # 지침 파일이 구조를 설명하는 레포는 최상위 디렉토리만 보여 준다.
     tree = tree_lines(root, max_depth=1 if lean else 2)
     if tree:

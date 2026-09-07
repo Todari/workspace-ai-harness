@@ -18,6 +18,8 @@ VAULT_ROOT = configured_path(
     "~/Library/Mobile Documents/iCloud~md~obsidian/Documents/docs",
 )
 CACHE_DIR = configured_path("WORKSPACE_HARNESS_CACHE_DIR", "~/.claude/cache")
+CODEX_RUNS_DIR = configured_path(
+    "WORKSPACE_HARNESS_CODEX_RUNS_DIR", os.path.join(CACHE_DIR, "codex-worker"))
 LOG_PATH = os.path.join(CACHE_DIR, "harness.log")
 MAP_CACHE_DIR = os.path.join(CACHE_DIR, "repo-maps")
 STATE_TTL_SECONDS = 7 * 24 * 3600
