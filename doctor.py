@@ -132,7 +132,10 @@ def check_orchestration(r):
     planner = config["planner"]
     r.ok("active worker %s/%s (reviewed %s)" % (
         worker["model"], worker["default_effort"], config.get("last_reviewed", "unknown")))
-    r.ok("Claude routing %s — nontrivial implementation → Codex" % routing["mode"])
+    if routing.get("enforcement", "hard") == "hard":
+        r.ok("Claude routing %s/hard — 위임 턴에서 탐색·편집 차단" % routing["mode"])
+    else:
+        r.ok("Claude routing %s/advisory — 힌트만 주입, 차단 없음" % routing["mode"])
     try:
         with open(CLAUDE_SETTINGS, encoding="utf-8") as f:
             claude_settings = json.load(f)

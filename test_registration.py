@@ -140,12 +140,25 @@ class ClaudeRegistrationTest(unittest.TestCase):
 
 
 class AutoRouteContextTest(unittest.TestCase):
-    def test_context_uses_tracked_model_and_requires_no_command(self):
-        context = claude_auto_route.routing_context(codex_worker.load_config())
+    def test_hard_context_uses_tracked_model_and_requires_no_command(self):
+        import json as _json
+        config = _json.loads(_json.dumps(codex_worker.load_config()))
+        config["routing"]["enforcement"] = "hard"
+        context = claude_auto_route.routing_context(config)
         self.assertIn("hard Codex handoff v2", context)
         self.assertIn("gpt-5.6-sol", context)
         self.assertIn("직접 해줘", context)
         self.assertIn("Never delegate again", context)
+
+    def test_advisory_context_is_short_and_non_blocking(self):
+        import json as _json
+        config = _json.loads(_json.dumps(codex_worker.load_config()))
+        config["routing"]["enforcement"] = "advisory"
+        context = claude_auto_route.routing_context(config)
+        self.assertIn("advisory", context)
+        self.assertIn("--detach", context)
+        self.assertNotIn("Do not poll", context)
+        self.assertLess(len(context), 900)
 
 
 class OrchestrationRegistrationTest(unittest.TestCase):

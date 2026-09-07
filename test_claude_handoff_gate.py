@@ -78,9 +78,15 @@ class ClassifierTest(unittest.TestCase):
             "분석하고 어디서 중복이 생기는지 근거와 함께 정리해줘"), "inspect")
 
 
+def hard_config():
+    config = json.loads(json.dumps(codex_worker.load_config()))
+    config["routing"]["enforcement"] = "hard"
+    return config
+
+
 class GateDecisionTest(unittest.TestCase):
     def setUp(self):
-        self.config = codex_worker.load_config()
+        self.config = hard_config()
         self.state = {
             "session": "abc",
             "route": "implement",
@@ -146,6 +152,14 @@ class GateDecisionTest(unittest.TestCase):
         config["routing"]["enforcement"] = "advisory"
         self.assertIsNone(gate.pre_tool(self.state, "Edit", {"file_path": "a.py"}, config))
         self.assertIsNone(gate.stop_decision(self.state, config))
+        hint = gate.route_context("implement", self.state, config)
+        self.assertIn("HINT", hint)
+        self.assertNotIn("Do not", hint)
+        self.assertEqual(gate.route_context("direct", self.state, config), "")
+
+    def test_hard_enforcement_still_routes(self):
+        config = json.loads(json.dumps(self.config))
+        config["routing"]["enforcement"] = "hard"
         self.assertIn("CODEX_IMPLEMENT", gate.route_context("implement", self.state, config))
 
     def test_wait_before_run_is_denied(self):
@@ -261,7 +275,7 @@ class StatePersistenceTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.original = gate.STATE_DIR
         gate.STATE_DIR = self.temp.name
-        self.config = codex_worker.load_config()
+        self.config = hard_config()
 
     def tearDown(self):
         gate.STATE_DIR = self.original

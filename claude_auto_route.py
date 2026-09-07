@@ -9,6 +9,17 @@ def routing_context(config):
     planner = config["planner"]
     worker = config["worker"]
     bypass = ", ".join('"%s"' % phrase for phrase in route["bypass_phrases"])
+    if route.get("enforcement", "hard") != "hard":
+        return """[Claude main: Codex delegation available, advisory]
+Work directly as usual at {planner} effort. Per-request hints may mark a request as a code change
+or investigation; they are suggestions, not routes. Delegate to a Codex worker only when the user
+asks with `{forced}` or the work is clearly long: `{model}`/{effort} for implementation,
+`{inspect}` for read-only inspection. Start it with `codex_worker.py run ... --manifest - --detach`
+and collect with `codex_worker.py wait <run_id>` in the foreground; never poll or background it.
+Never delegate again inside Codex, and never commit, push, open a PR, or deploy unless asked.
+""".format(planner=planner["default_effort"], forced=route["forced_command"],
+           model=worker["model"], effort=worker["default_effort"],
+           inspect=worker["inspection_effort"])
     return """[Claude main only: hard Codex handoff v2]
 UserPromptSubmit supplies the route for each request; obey it. The user needs no slash command.
 Main Fable is a bounded decision layer ({planner}, at most {turns} turns), not a developer or repo

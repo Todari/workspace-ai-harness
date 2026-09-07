@@ -157,10 +157,29 @@ def classify_prompt(prompt, config, previous=None):
     return "direct", "conversation-or-decision"
 
 
+def advisory_context(route, config):
+    """advisory 모드: 차단 없이 짧은 힌트만. direct는 아무것도 주입하지 않아 토큰을 아낀다."""
+    if route == "direct":
+        return ""
+    forced = config["routing"]["forced_command"]
+    if route in ("implement", "batch", "architect"):
+        kind = "a code or artifact change"
+    else:
+        kind = "a repository investigation"
+    return (
+        "[HARNESS HINT route={route}] This looks like {kind}. Handle it directly as usual. "
+        "Delegating to Codex is optional: if the work is long, the user can ask with `{forced}`, "
+        "and the worker protocol is `codex_worker.py run ... --manifest - --detach` then "
+        "`codex_worker.py wait <run_id>` in the foreground."
+    ).format(route=route, kind=kind, forced=forced)
+
+
 def route_context(route, state, config):
     routing = config["routing"]
     worker = config["worker"]
     session = state["session"]
+    if enforcement(config) != "hard":
+        return advisory_context(route, config)
     wait_timeout = routing["wait_timeout_seconds"]
     common = (
         "Protocol: `run ... --detach` returns run_id at once; then call "
@@ -508,7 +527,8 @@ def handle(data, config=None):
                 "updated_at": time.time(),
             })
             lib.event("route-decision", key, "%s:%s" % (route, reason))
-            return json.loads(lib.hook_output(event, route_context(route, state, config)))
+            text = route_context(route, state, config)
+            return json.loads(lib.hook_output(event, text)) if text else None
         if event == "PreToolUse":
             decision = pre_tool(state, data.get("tool_name", ""), data.get("tool_input"), config)
             if decision:

@@ -26,7 +26,7 @@
   },
   "routing": {
     "mode": "hard_handoff",
-    "enforcement": "hard",
+    "enforcement": "advisory",
     "classifier_version": 1,
     "max_contract_chars": 3000,
     "max_planner_tool_calls": 2,
@@ -106,6 +106,18 @@
       "evidence": [
         "local Claude usage audit 2026-09-07 (codex-worker records, claude-handoff states)",
         "https://code.claude.com/docs/en/hooks"
+      ]
+    },
+    {
+      "effective_date": "2026-09-07",
+      "planner_model": "fable",
+      "planner_effort": "medium",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "high",
+      "routing_mode": "hard_handoff",
+      "reason": "하드 게이트 도입 첫날 오분류·죽은 턴·바이패스 반복으로 작업 비용이 이득보다 컸다. enforcement=advisory로 낮춰 차단을 없애고 힌트만 남긴다. Fable medium 기본값만으로 사용량이 충분히 내려가면 일주일 뒤 분류기·게이트를 제거한다",
+      "evidence": [
+        "local Claude usage audit 2026-09-07 (route-block 28건, result_ready without run 3세션)"
       ]
     }
   ]
