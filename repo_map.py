@@ -76,6 +76,12 @@ def save_cached_map(root, fingerprint, text):
                   ensure_ascii=False)
 
 
+def renderer_revision():
+    """출력 코드가 바뀌면 레포 상태가 같아도 이전 렌더링 캐시를 버린다."""
+    with open(__file__, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()[:16]
+
+
 def repo_fingerprint(root):
     """컨텍스트에 영향을 주는 git/메타데이터 변경을 캐시 키에 포함한다.
 
@@ -83,9 +89,10 @@ def repo_fingerprint(root):
     디렉토리만 보면 루트 src/ 같은 변경이 최대 7일 동안 캐시에 가려질 수 있다.
     """
     pieces = [
+        renderer_revision(),
         git(root, "rev-parse", "HEAD"),
         git(root, "branch", "--show-current"),
-        git(root, "status", "--porcelain"),
+        git(root, "status", "--short", "--branch"),
     ]
     metadata = [
         os.path.join(root, "package.json"),
@@ -406,10 +413,11 @@ def main():
         directory = os.path.realpath(cwd)
         if not should_inject(directory):
             return
-        text = load_cached_map(directory, "group", GROUP_MAX_AGE_SECONDS)
+        fingerprint = "group:" + renderer_revision()
+        text = load_cached_map(directory, fingerprint, GROUP_MAX_AGE_SECONDS)
         if text is None:
             text = build_group_map(directory)
-            save_cached_map(directory, "group", text)
+            save_cached_map(directory, fingerprint, text)
         if text:
             lib.event("map-inject", session_id, "%s:%d" % (os.path.basename(directory), len(text)))
             print(lib.hook_output("SessionStart", text))

@@ -3,6 +3,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import harness_lib as lib
 import repo_map
@@ -201,6 +202,35 @@ class CacheTest(unittest.TestCase):
 
 
 class FingerprintTest(unittest.TestCase):
+    def test_upstream_only_change_invalidates_cached_git_status(self):
+        with tempfile.TemporaryDirectory() as d:
+            make_fixture_repo(d)
+            branch = repo_map.git(d, "branch", "--show-current")
+            head = repo_map.git(d, "rev-parse", "HEAD")
+            subprocess.run(["git", "-C", d, "branch", "upstream"], check=True)
+            subprocess.run(["git", "-C", d, "branch", "--set-upstream-to=upstream"],
+                           check=True, capture_output=True)
+            before = repo_map.repo_fingerprint(d)
+            subprocess.run(["git", "-C", d, "switch", "-q", "upstream"], check=True)
+            subprocess.run(["git", "-C", d, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "--allow-empty", "-q", "-m", "upstream advance"], check=True)
+            subprocess.run(["git", "-C", d, "switch", "-q", branch], check=True)
+            self.assertEqual(repo_map.git(d, "rev-parse", "HEAD"), head)
+            self.assertIn("behind 1", repo_map.build_map(d))
+            self.assertNotEqual(before, repo_map.repo_fingerprint(d))
+
+    def test_renderer_change_invalidates_fingerprint_without_repo_change(self):
+        with tempfile.TemporaryDirectory() as d, tempfile.TemporaryDirectory() as renderer_dir:
+            make_fixture_repo(d)
+            renderer = os.path.join(renderer_dir, "renderer.py")
+            with open(renderer, "w") as f:
+                f.write("old renderer")
+            with patch.object(repo_map, "__file__", renderer):
+                before = repo_map.repo_fingerprint(d)
+                with open(renderer, "w") as f:
+                    f.write("new renderer")
+                self.assertNotEqual(before, repo_map.repo_fingerprint(d))
+
     def test_dirty_metadata_invalidates_fingerprint(self):
         with tempfile.TemporaryDirectory() as d:
             make_fixture_repo(d)

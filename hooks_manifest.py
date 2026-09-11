@@ -7,6 +7,7 @@ register_hooks.py(Claude)·register_codex.py(Codex)·doctor.py가 이 목록 하
 각 항목의 ``clients``를 생략하면 양쪽에 등록한다. Claude 메인 세션에만 필요한 정책은
 ``("claude",)``로 제한해 Codex worker에 재귀적으로 주입하지 않는다.
 """
+import ast
 import hashlib
 import os
 
@@ -64,8 +65,27 @@ def script_path(script):
 
 
 def script_revision(script):
-    with open(script_path(script), "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()[:16]
+    # Follow local Python imports without executing them. A helper edit changes
+    # the trust revision of every hook that imports it, including transitively.
+    pending, sources = [script], {}
+    while pending:
+        name = pending.pop()
+        if name in sources:
+            continue
+        with open(script_path(name), "rb") as f:
+            sources[name] = f.read()
+        for node in ast.walk(ast.parse(sources[name])):
+            modules = ([alias.name for alias in node.names] if isinstance(node, ast.Import)
+                       else [node.module] if isinstance(node, ast.ImportFrom) and node.module
+                       else [])
+            for module in modules:
+                dependency = module.split(".")[0] + ".py"
+                if os.path.isfile(script_path(dependency)):
+                    pending.append(dependency)
+    digest = hashlib.sha256()
+    for name, body in sorted(sources.items()):
+        digest.update(name.encode() + b"\0" + body + b"\0")
+    return digest.hexdigest()[:16]
 
 
 def claude_command(script):

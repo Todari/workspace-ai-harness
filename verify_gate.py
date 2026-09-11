@@ -34,8 +34,10 @@ NON_SOURCE_DOC_NAMES = {
 }
 NON_SOURCE_DOC_SUFFIXES = (".md", ".txt", ".rst", ".adoc")
 VERIFY_MESSAGE = (
-    "[workspace harness] 소스 변경 뒤 검증이 없습니다. 레포 요약의 완료 기준 명령을 우선하고, "
-    "없으면 변경과 가장 관련 있는 typecheck·test·build를 실행해 결과를 확인한 뒤 종료하세요."
+    "[workspace harness] 마지막 소스 변경 뒤 검증 성공 기록을 찾지 못했습니다. "
+    "이미 실행했다면 해당 변경 이후의 완료 결과·종료 코드를 확인하세요. "
+    "성공이 확인되면 재실행 없이 결과를 보고하고 종료해도 됩니다. "
+    "결과가 없거나 실패했다면 레포 완료 기준 또는 관련 typecheck·test·build를 실행하세요."
 )
 
 
@@ -130,6 +132,19 @@ def _is_verify_argv(argv):
     tool = os.path.basename(args[0]).lower()
     rest = args[1:]
 
+    if tool in ("sh", "bash", "zsh"):
+        for i, arg in enumerate(rest[:-1]):
+            if not arg.startswith("-") or arg == "--":
+                break  # 스크립트에 넘긴 '-c' 인수는 셸의 실행 옵션이 아니다.
+            if re.fullmatch(r"-[a-z]*c[a-z]*", arg):
+                return is_verify_command(rest[i + 1])
+        return False
+    if tool in ("uv", "poetry", "pipenv"):
+        rest = _without_options(rest)
+        if rest and rest[0] == "run":
+            return _is_verify_argv(_without_options(rest[1:]))
+        return False
+
     if tool in PACKAGE_MANAGERS:
         rest = _without_options(rest)
         if not rest:
@@ -180,7 +195,7 @@ def _is_verify_argv(argv):
     return False
 
 
-# Claude와 Codex 모두 성공한 도구 호출에 PostToolUse를 발화한다. 이 마커들은
+# Codex는 실패한 셸 명령도 PostToolUse를 발화한다. 이 마커들은
 # `tsc || true` 류 합성 명령(전체 exit 0)의 실패 출력을 걸러내는 보조선이다.
 FAILURE_MARKERS = ("error TS", "npm ERR!", "Traceback (most recent call last)",
                    "FAILED", "FAIL ", "ELIFECYCLE")
@@ -188,10 +203,22 @@ FAILURE_MARKERS = ("error TS", "npm ERR!", "Traceback (most recent call last)",
 
 def is_successful_response(tool_response):
     if isinstance(tool_response, str):
+        # 어댑터가 JSON 결과를 문자열로 전달해도 종료 코드를 보존한다.
+        try:
+            decoded = json.loads(tool_response)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, dict):
+            return is_successful_response(decoded)
+        if re.search(r"^Process (?:running with session ID|exited with code (?!0\b)-?\d+)",
+                     tool_response, re.MULTILINE):
+            return False
         return not any(marker in tool_response for marker in FAILURE_MARKERS)
     if not isinstance(tool_response, dict):
         return True  # 스키마 판단 불가 — fail-open으로 성공 취급
     exit_code = tool_response.get("exit_code", tool_response.get("exitCode"))
+    if exit_code is None and tool_response.get("session_id") is not None:
+        return False  # 실행 시작은 성공이 아니다. 완료 후 Bash 이벤트에서 기록한다.
     if exit_code is not None and exit_code != 0:
         return False
     if tool_response.get("interrupted"):

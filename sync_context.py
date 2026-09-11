@@ -65,6 +65,7 @@ def replace_managed_block(current, content):
 
 
 def sync_target(target, content):
+    content = target_content(target, content)
     os.makedirs(os.path.dirname(target), exist_ok=True)
     current = None
     try:
@@ -85,9 +86,20 @@ def rendered_source():
         return render_source(f.read())
 
 
+def target_content(target, content):
+    """Codex global already carries the rules; don't inject them twice at workspace root."""
+    if (os.path.realpath(target) == os.path.join(lib.WORKSPACE_ROOT, "AGENTS.md")
+            and CODEX_GLOBAL in TARGETS):
+        return ("# Workspace 진입 안내\n\n"
+                "공통 규칙은 Codex 전역 AGENTS.md에 한 번만 둔다. 해당 규칙이 현재 문맥에 "
+                "없으면 이 디렉터리의 CLAUDE.md를 읽는다. 레포별 지침은 해당 레포에서 확인한다.\n")
+    return content
+
+
 def is_synced(target, content=None):
     """대상의 관리 블록이 현재 원본과 같으면 True (doctor용, 쓰지 않음)."""
     content = rendered_source() if content is None else content
+    content = target_content(target, content)
     try:
         with open(target, encoding="utf-8") as f:
             current = f.read()

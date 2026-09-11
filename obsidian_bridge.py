@@ -117,6 +117,15 @@ def task_preview(tasks, limit=3):
     return shown
 
 
+def project_focus(body):
+    """허브가 명시한 현재 초점만 읽는다. 과거 로그·mtime에서 현재 상태를 추정하지 않는다."""
+    match = re.search(r"^## 현재 초점\s*\n(.*?)(?=^## |\Z)", body, re.S | re.M)
+    if not match:
+        return ""
+    lines = [line.strip() for line in match.group(1).splitlines() if line.strip()]
+    return "\n".join(line[:240] for line in lines[:3])
+
+
 def main():
     data = lib.read_hook_input()
     cwd = data.get("cwd", "")
@@ -129,12 +138,21 @@ def main():
     if not os.path.exists(note_path):
         return
     body = read_with_timeout(note_path)
+    if not body:
+        # 읽기 실패를 '할 일 없음'으로 전달하지 않는다.
+        print(lib.hook_output("SessionStart",
+              f"[옵시디언 브리지] `{rel}` 읽기 실패 또는 빈 노트. 상태·할 일은 확인되지 않았습니다. "
+              "현재 요청은 레포 문맥으로 진행하고, 과거 결정이 필요할 때만 다시 읽으세요."))
+        return
     tasks = next_tasks(body)
 
     parts = [f"[옵시디언 브리지] 이 레포의 볼트 노트: `{rel}`"]
     definition = one_liner(body)
     if definition:
         parts.append(f"한 줄 정의: {definition}")
+    focus = project_focus(body)
+    if focus:
+        parts.append("현재 초점 (노트에 적힌 확인 시점 기준):\n" + focus)
     if tasks:
         parts.append(
             f"미완료 다음 할 일 {len(tasks)}건 — 현재 요청과 관련 있을 때만 참고:\n"
@@ -158,7 +176,9 @@ def main():
     parts.append(
         "볼트는 사용자가 기록을 요청했거나, 이번 작업으로 제품 의사결정·프로젝트 상태·다음 할 일이 "
         "실제로 바뀐 경우에만 갱신한다. 일반 코드 수정·검증·질문만으로는 쓰지 않는다. 기록이 필요하면 "
-        "완료는 `- [x]`, 신규는 `- [ ]`로 적고 한 줄로 보고한다.\n"
+        "종료 전에 기존 항목을 갱신하고, 새 결정에는 이유·확인 날짜·근거 링크를 남긴다. "
+        "같은 할 일을 중복 추가하지 않고, 완료 근거가 있을 때만 `- [x]`로 바꾼다. "
+        "로컬 기록과 원격 동기화·Discord 반영은 따로 확인해 한 줄로 보고한다.\n"
         f"노트 경로: {note_path}")
 
     text = "\n\n".join(parts)

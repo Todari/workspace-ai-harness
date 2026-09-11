@@ -9,14 +9,19 @@ Claude Code와 Codex가 같은 작업 공간에서 공통 프로젝트 컨텍스
 - 세션 시작 시 현재 Git 루트·브랜치·dirty 상태와 스택·스크립트를 요약한 repo map 주입.
   레포에 `AGENTS.md`/`CLAUDE.md`가 있으면 구조는 그 문서에 맡기고 짧은 lean 모드로 주입한다.
   git 레포가 아닌 그룹 디렉토리에서는 하위 레포의 브랜치·변경 요약을 대신 준다.
-- 공통 규칙을 workspace `AGENTS.md`·`CLAUDE.md`와 Codex 전역 `~/.codex/AGENTS.md`에 관리 블록으로 동기화.
-  Codex는 git 루트 위의 AGENTS.md를 읽지 않으므로 전역 파일이 레포 세션에 규칙을 전달한다.
+- 공통 규칙은 workspace `CLAUDE.md`와 Codex 전역 `~/.codex/AGENTS.md`에 동기화한다.
+  Codex 전역 지침이 있는 환경에서 workspace `AGENTS.md`는 짧은 진입 안내로 만들어 중복 주입을 줄인다.
 - 레포 레지스트리(`context/local/repos.json`) 하나로 규칙 표·볼트 노트 매핑·활동 추적을 생성.
 - 소스 편집 후 타입체크·테스트·빌드 없이 종료하려 할 때 편집 세대당 한 번 알림.
 - 선택적인 Obsidian 프로젝트 노트 검색·다음 할 일 브리지, 서브에이전트용 읽기 전용 안내.
 - 훅 목록(`hooks_manifest.py`) 하나에서 Claude Code와 Codex 설정에 멱등 등록, `doctor.py`로 드리프트 점검.
-- 로그·캐시 크기 제한과 모든 훅의 fail-open 처리, `stats.py`로 Claude·Codex 토큰과 검증 이행률 관측.
-- 규칙 기반 라우터가 LLM 호출 없이 요청을 분류하고, 하드 게이트가 Fable의 반복 탐색·편집·폴링을 차단.
+- 로그·캐시 크기 제한과 모든 훅의 fail-open 처리. `stats.py`는 기본으로 가벼운 작업 기록만 집계하고
+  Claude 전체 사용량은 `--include-claude`로 선택한다. JSON 집계도 지원한다.
+- `ops_report.py`로 자동화의 실제 종료 코드·마지막 성공·미실행을 관측하고, LLM 없이 로컬 리포트를 만든다.
+  Slack·Discord는 명시적인 `--send`에서만 전송하며 일일 중복 전송과 불확실한 응답 재전송을 막는다.
+- Discord 캡처 페이지네이션·처리 원장·부분 ack 실패 보고, 레지스트리 기반 볼트 동기화와 전송 전 Git 최신성 검사.
+- 규칙 기반 라우터가 LLM 호출 없이 요청을 분류한다. 현재 개인 설정은 advisory로, 차단 없이 위임을 권고한다.
+  hard 모드는 선택할 수 있지만 오분류·재시도 비용을 먼저 측정해야 한다.
   전용 `codex exec` 세션이 조사·구현·검증하고 실행별 모델·effort·thread·Git·토큰을 기록한다.
 
 ## 요구 사항
@@ -56,7 +61,8 @@ python3 register_orchestration.py
 python3 doctor.py
 ```
 
-Codex는 등록된 훅 명령의 변경을 감지하면 다시 신뢰 승인을 요구합니다. 하네스 코드를 수정한 뒤에는
+Codex는 등록된 훅 명령의 변경을 감지하면 다시 신뢰 승인을 요구합니다.
+리비전은 진입 스크립트와 전이적인 로컬 Python import를 함께 해시합니다. 하네스 코드를 수정한 뒤에는
 `register_codex.py`를 다시 실행하고 Hooks 화면에서 승인하세요. `doctor.py`가 리비전 불일치를 알려 줍니다.
 
 ## 설정
@@ -120,7 +126,9 @@ Claude의 실제 Fable 기본 effort도 `medium`으로 동기화합니다.
 `직접 해줘`, `Claude가 직접 해줘`, `Codex 쓰지 마`, `위임하지 마`라고 하면 Claude가 직접
 처리합니다. 반대로 `/delegate-codex <작업>`은 자동 분류와 무관하게 Codex 위임을 강제합니다.
 자동 정책은 Claude 훅에만 등록되므로 Codex worker가 다시 자신을 호출하지 않습니다.
-위임된 턴에서는 Claude의 레포 탐색·편집·background 실행(`&`와 `run_in_background` 파라미터 모두)·
+아래 강제 차단 동작은 `routing.enforcement=hard`를 선택한 경우에만 적용됩니다.
+현재 `advisory`에서는 직접 수행이 허용되며, 강제 차단하지 않습니다.
+하드 모드로 위임된 턴에서는 Claude의 레포 탐색·편집·background 실행(`&`와 `run_in_background` 파라미터 모두)·
 로그 redirect·주기적 폴링이 차단됩니다. worker는 `run --detach`로 세션과 분리해 띄우고 run_id를
 즉시 받은 뒤, `wait <run_id>`를 foreground에서 호출해 기다립니다. Codex run은 중앙값 10분,
 p90 30분 가까이 걸려 Claude Bash 도구의 600초 상한을 넘기 때문에 blocking 1회 호출로는 결과가
@@ -139,6 +147,17 @@ python3 codex_worker.py rerun <run-id> --model <candidate> --effort high
 
 동일 worktree에는 worker 하나만 실행합니다. 상세 운영·재현·모델 승격 절차는
 [`docs/codex-orchestration.md`](docs/codex-orchestration.md)를 참고하세요.
+
+## 운영과 실측 개선
+
+운영 리포트, 실패 복구, Slack·Discord 연결, 2026-09-08 감사 결과는
+[`docs/operations.md`](docs/operations.md)를 참고하세요.
+
+```bash
+python3 stats.py 7 --json
+python3 stats.py 7 --include-claude  # 상세 사용량을 조사할 때만
+python3 ops_report.py report --days 1  # 미리보기, 외부 전송 없음
+```
 
 ## 검증
 

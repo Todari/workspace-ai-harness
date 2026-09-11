@@ -158,6 +158,30 @@ class VerifyGateTest(unittest.TestCase):
             tool_response={"exit_code": 1, "output": "failed"}))
         self.assertEqual(self.stop()["decision"], "block")
 
+    def test_running_command_counts_only_after_completion(self):
+        self.edit()
+        self.bash("uv run python -m unittest", tool_response={
+            "session_id": 42, "exit_code": None, "output": ""})
+        self.assertEqual(verify_gate.load_state("vg-test")["last_verify"], 0)
+        # Codex의 write_stdin 완료는 원래 명령의 Bash 이벤트로 전달된다.
+        self.bash("uv run python -m unittest", tool_response={
+            "exit_code": 0, "output": "Ran 3 tests\nOK"})
+        self.assertIsNone(self.stop())
+
+    def test_encoded_nonzero_and_running_results_do_not_count(self):
+        for response in ('{"exit_code": 7, "output": ""}',
+                         "Process exited with code 7\nFinal output:\n",
+                         "Process exited with code -9\nFinal output:\n",
+                         "Process running with session ID 42"):
+            with self.subTest(response=response):
+                self.edit()
+                self.bash("npm test", tool_response=response)
+                self.assertEqual(self.stop()["decision"], "block")
+
+    def test_prompt_allows_reviewing_existing_verification(self):
+        self.edit()
+        self.assertIn("재실행 없이", self.stop()["reason"])
+
     def test_codex_string_failure_marker_not_counted(self):
         self.edit()
         verify_gate.handle(ev(
@@ -197,6 +221,16 @@ class IsVerifyCommandTest(unittest.TestCase):
                     "pnpm --filter api run type-check",
                     "npm -w apps/web run build"):
             self.assertTrue(verify_gate.is_verify_command(cmd), cmd)
+
+    def test_wrapped_verification(self):
+        for cmd in ("uv run python -m unittest discover", "poetry run pytest",
+                    "pipenv run pytest", "uv run --project api pytest",
+                    "bash -lc 'cd api && npm test'", "zsh -c 'cargo check'"):
+            self.assertTrue(verify_gate.is_verify_command(cmd), cmd)
+        for cmd in ("uv run python app.py", "bash -c 'echo pytest'",
+                    "echo 'uv run pytest'", "bash test.sh",
+                    "bash script.sh -c 'npm test'"):
+            self.assertFalse(verify_gate.is_verify_command(cmd), cmd)
 
 
 if __name__ == "__main__":

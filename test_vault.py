@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 import harness_lib as lib
 
@@ -60,6 +61,22 @@ class VaultSearchTest(unittest.TestCase):
 
 
 class BridgeHookTest(unittest.TestCase):
+    def test_unreadable_note_does_not_claim_no_tasks(self):
+        import contextlib
+        import io
+        import obsidian_bridge as bridge
+        with mock.patch.object(bridge.lib, "read_hook_input", return_value={
+                "cwd": lib.WORKSPACE_ROOT}), \
+                mock.patch.object(bridge, "repo_basename", return_value="demo"), \
+                mock.patch.object(bridge, "note_path_for", return_value="demo.md"), \
+                mock.patch.object(bridge.os.path, "exists", return_value=True), \
+                mock.patch.object(bridge, "read_with_timeout", return_value=""), \
+                contextlib.redirect_stdout(io.StringIO()) as output:
+            bridge.main()
+        ctx = json.loads(output.getvalue())["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("확인되지 않았습니다", ctx)
+        self.assertNotIn("비어 있음", ctx)
+
     def test_outside_workspace_is_silent(self):
         p = run(BRIDGE, stdin=json.dumps({"cwd": "/tmp"}))
         self.assertEqual(p.stdout.strip(), "")
@@ -106,6 +123,16 @@ class KnowledgeIndexTest(unittest.TestCase):
         preview = self.b.task_preview(tasks)
         self.assertEqual(len(preview), 4)
         self.assertIn("외 5건", preview[-1])
+
+    def test_focus_is_bounded_and_does_not_include_historical_decisions(self):
+        body = "## 현재 초점\n\n- 확인: 2026-09-11\n- 상태: 운영\n- 판단: " + "x"*500
+        body += "\n- 추가 항목\n\n## 제품 결정 로그\n- 오래된 결정\n"
+        focus = self.b.project_focus(body)
+        self.assertEqual(len(focus.splitlines()), 3)
+        self.assertLessEqual(len(focus), 722)
+        self.assertNotIn("추가 항목", focus)
+        self.assertNotIn("오래된 결정", focus)
+        self.assertEqual(self.b.project_focus("## 제품 결정 로그\n- 과거 운영 중"), "")
 
     def test_shared_project_folder_has_no_index(self):
         """프로젝트/ 아래 단일 노트는 지식베이스가 아니므로 인덱스를 만들지 않는다."""

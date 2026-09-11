@@ -2,6 +2,7 @@ import copy
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import claude_auto_route
 import claude_handoff_gate
@@ -14,6 +15,18 @@ import sync_context
 
 
 class ManifestTest(unittest.TestCase):
+    def test_revision_tracks_transitive_helpers_but_not_unrelated_files(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(manifest, "HARNESS", d):
+            p = Path(d)
+            (p / "hook.py").write_text("import helper\n")
+            (p / "helper.py").write_text("import leaf\n")
+            (p / "leaf.py").write_text("value = 1\n")
+            before = manifest.script_revision("hook.py")
+            (p / "other.py").write_text("value = 7\n")
+            self.assertEqual(before, manifest.script_revision("hook.py"))
+            (p / "leaf.py").write_text("value = 2\n")
+            self.assertNotEqual(before, manifest.script_revision("hook.py"))
     def test_every_script_exists(self):
         for spec in manifest.HOOKS:
             self.assertTrue(os.path.exists(manifest.script_path(spec["script"])), spec["script"])
@@ -202,6 +215,15 @@ class OrchestrationRegistrationTest(unittest.TestCase):
 
 
 class ContextSyncTest(unittest.TestCase):
+    def test_workspace_entry_does_not_duplicate_global_rules(self):
+        target = os.path.join(sync_context.lib.WORKSPACE_ROOT, "AGENTS.md")
+        with mock.patch.object(sync_context, "TARGETS", (target, sync_context.CODEX_GLOBAL)):
+            entry = sync_context.target_content(target, "UNIQUE FULL RULES")
+            self.assertNotIn("UNIQUE FULL RULES", entry)
+            self.assertEqual(sync_context.target_content(sync_context.CODEX_GLOBAL,
+                                                        "UNIQUE FULL RULES"), "UNIQUE FULL RULES")
+        with mock.patch.object(sync_context, "TARGETS", (target,)):
+            self.assertEqual(sync_context.target_content(target, "FULL"), "FULL")
     def test_source_is_tracked_harness_context(self):
         self.assertIn(sync_context.SOURCE, (sync_context.LOCAL_SOURCE, sync_context.EXAMPLE_SOURCE))
 

@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""하네스 이벤트 통계. 사용: python3 stats.py [일수=7]
+"""하네스 이벤트 통계. 사용: python3 stats.py [일수=7] [--json] [--include-claude]
+
+기본은 이벤트·상태·Codex worker 요약만 읽는다. 큰 Claude 원문 사용량 집계는
+--include-claude를 명시했을 때만 실행한다. --json은 정기 운영 보고용이다.
 
 읽는 법:
 - map-inject의 주입 문자 수가 크면 repo-map이 토큰을 먹고 있다는 신호 → lean 모드·심층 문서 축소.
 - verify-block 대비 검증 이행률이 낮으면 게이트가 무시되고 있다는 신호.
 """
+import argparse
 import datetime
 import glob
 import json
 import os
-import sys
+import math
 import time
 from collections import Counter
 
@@ -145,10 +149,12 @@ def codex_worker_summary(run_dir=CODEX_RUNS_DIR, since_ts=0):
 
 
 def claude_usage_summary(projects_dir=CLAUDE_PROJECTS_DIR, since_ts=0):
-    """Claude JSONL의 스트리밍 중복 message id를 제거하고 실제 요청 사용량을 집계한다."""
+    """최근 파일의 실제 요청만 집계하며 파일간 복제·스트리밍은 최신 요청 ID로 합친다."""
     messages = {}
     for path in glob.glob(os.path.join(projects_dir, "**", "*.jsonl"), recursive=True):
         try:
+            if os.path.getmtime(path) < since_ts:
+                continue
             f = open(path, encoding="utf-8", errors="replace")
         except OSError:
             continue
@@ -156,22 +162,42 @@ def claude_usage_summary(projects_dir=CLAUDE_PROJECTS_DIR, since_ts=0):
             for line in f:
                 try:
                     row = json.loads(line)
+                    if not isinstance(row, dict):
+                        continue
                     stamp = row.get("timestamp", "")
+                    if not isinstance(stamp, str):
+                        continue
                     ts = datetime.datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
                 except (ValueError, TypeError):
                     continue
                 if ts < since_ts:
                     continue
                 message = row.get("message") or {}
+                if not isinstance(message, dict):
+                    continue
                 usage = message.get("usage") or {}
-                if not usage or not message.get("model"):
+                model = message.get("model")
+                if not isinstance(usage, dict) or not usage or not isinstance(model, str):
                     continue
-                message_id = message.get("id") or row.get("uuid")
-                if not message_id:
+                if not model or model.strip("<>").lower() == "synthetic" or row.get("isSynthetic"):
                     continue
-                messages[(path, message_id)] = {
+                message_id = message.get("id")
+                if isinstance(message_id, str) and message_id:
+                    key = ("message", message_id)
+                elif isinstance(row.get("uuid"), str) and row["uuid"]:
+                    key = ("row", path, row["uuid"])
+                else:
+                    continue
+                # 같은 timestamp의 streaming 조각은 누적 output이 큰 쪽을 보존한다.
+                output_tokens = usage.get("output_tokens", 0)
+                order = (ts, output_tokens if isinstance(output_tokens, int) else 0)
+                previous = messages.get(key)
+                if previous and previous["order"] > order:
+                    continue
+                messages[key] = {
+                    "order": order,
                     "path": path,
-                    "model": message["model"],
+                    "model": model,
                     "effort": row.get("effort") or "unknown",
                     "sidechain": bool(row.get("isSidechain")),
                     "usage": usage,
@@ -200,14 +226,50 @@ def claude_usage_summary(projects_dir=CLAUDE_PROJECTS_DIR, since_ts=0):
     return summary
 
 
-def main():
-    days = float(sys.argv[1]) if len(sys.argv) > 1 else 7
+def collect_report(days=7, include_claude=False):
+    """운영 보고용 읽기 전용 수집. Claude 원문 접근은 명시적으로 선택한다."""
+    if not isinstance(days, (int, float)) or not math.isfinite(days) or days <= 0:
+        raise ValueError("days must be a positive finite number")
+    now = time.time()
+    since_ts = now - days * 86400
     try:
         with open(lib.EVENTS_PATH, encoding="utf-8") as f:
-            lines = f.readlines()
+            events = summarize(f, since_ts)
     except OSError:
-        lines = []
-    s = summarize(lines, time.time() - days * 86400)
+        events = summarize([], since_ts)
+    prompted, verified = verify_compliance()
+    return {
+        "schema_version": 1,
+        "days": days,
+        "generated_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat(),
+        "since": datetime.datetime.fromtimestamp(since_ts, datetime.timezone.utc).isoformat(),
+        "events": events,
+        "verification": {
+            "prompted": prompted,
+            "verified": verified,
+            "state_ttl_days": lib.STATE_TTL_SECONDS / 86400,
+        },
+        "handoff": handoff_summary(since_ts=since_ts),
+        "codex_workers": codex_worker_summary(since_ts=since_ts),
+        "claude_included": bool(include_claude),
+        "claude": claude_usage_summary(since_ts=since_ts) if include_claude else None,
+    }
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("days", nargs="?", type=float, default=7)
+    parser.add_argument("--json", action="store_true", help="운영 보고용 JSON 출력")
+    parser.add_argument("--include-claude", action="store_true", help="Claude 원문 사용량 집계 포함")
+    args = parser.parse_args(argv)
+    if not math.isfinite(args.days) or args.days <= 0:
+        parser.error("days must be a positive finite number")
+    report = collect_report(args.days, include_claude=args.include_claude)
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+        return
+    days = report["days"]
+    s = report["events"]
     print("최근 %g일 하네스 이벤트" % days)
     if not s["kinds"]:
         print("  (없음)")
@@ -220,11 +282,12 @@ def main():
         for name, n in s["inject_by_repo"]:
             chars = s["inject_chars"].get(name, 0)
             print("    %-24s %4d / %s" % (name, n, ("%d" % chars) if chars else "-"))
-    prompted, verified = verify_compliance()
+    prompted = report["verification"]["prompted"]
+    verified = report["verification"]["verified"]
     if prompted:
         print("  검증 게이트 이행: 차단 %d세션 중 %d세션이 검증 실행 (%d%%)" % (
             prompted, verified, 100 * verified // prompted))
-    handoff = handoff_summary(since_ts=time.time() - days * 86400)
+    handoff = report["handoff"]
     if handoff["routes"]:
         print("  라우트 분포: %s" % ", ".join("%s %d" % item
                                             for item in handoff["routes"].most_common()))
@@ -236,7 +299,7 @@ def main():
                   handoff["result_ready"], handoff["violations"] / n,
                   handoff["background_attempts"], handoff["wait_calls"] / n,
                   handoff["planner_tool_calls"] / n))
-    workers = codex_worker_summary(since_ts=time.time() - days * 86400)
+    workers = report["codex_workers"]
     if workers["runs"]:
         print("  Codex worker: %d회 / 상태 %s" % (
             workers["runs"], ", ".join("%s %d" % item
@@ -250,8 +313,10 @@ def main():
             input_tokens, cached_tokens, max(0, input_tokens - cached_tokens),
             usage.get("output_tokens", 0), usage.get("reasoning_output_tokens", 0)))
         print("    평균 시간: %.1f초" % (workers["duration_seconds"] / workers["runs"]))
-    claude = claude_usage_summary(since_ts=time.time() - days * 86400)
-    if claude["requests"]:
+    claude = report["claude"]
+    if claude is None:
+        print("  Claude 원문 사용량은 생략 (--include-claude로 포함)")
+    elif claude["requests"]:
         print("  Claude: %d 요청 / %d 세션 파일 (sidechain %d)" % (
             claude["requests"], claude["sessions"], claude["sidechain_requests"]))
         print("    라우트: %s" % ", ".join("%s %d" % item
