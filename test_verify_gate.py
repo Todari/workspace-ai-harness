@@ -303,3 +303,28 @@ class EditAndVerifyTogetherTest(unittest.TestCase):
             "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\ngit push")
         self.assertFalse(state.get("last_edit"), "커밋 메시지는 소스 편집이 아니다")
         self.assertTrue(state.get("last_verify"))
+
+
+class VerifySuggestionTest(unittest.TestCase):
+    def test_detects_node_and_python_layouts(self):
+        import json as _json
+        import tempfile as _tf
+        root = _tf.mkdtemp()
+        os.makedirs(os.path.join(root, ".git"))
+        with open(os.path.join(root, "package.json"), "w") as f:
+            _json.dump({"scripts": {"typecheck": "tsc", "test": "vitest", "dev": "x"}}, f)
+        open(os.path.join(root, "pnpm-lock.yaml"), "w").close()
+        os.makedirs(os.path.join(root, "tests"))
+        open(os.path.join(root, "tests", "test_a.py"), "w").close()
+        cmds = verify_gate.suggest_verify_commands(root)
+        self.assertEqual(cmds, ["pnpm run typecheck", "pnpm test", "python3 -m unittest discover -s tests"])
+        self.assertIn("pnpm test", verify_gate.block_reason(root))
+        self.assertEqual(verify_gate.block_reason(""), verify_gate.VERIFY_MESSAGE)
+
+    def test_edit_target_and_root(self):
+        cwd = os.path.join(lib.WORKSPACE_ROOT, "projects", "todari")
+        self.assertTrue(verify_gate.edit_target_path("Edit", {"file_path": "/a/b.ts"}).endswith("/a/b.ts"))
+        self.assertTrue(verify_gate.edit_target_path("Bash", {"command": "cat > src/x.ts <<'EOF'"}, cwd)
+                        .endswith("src/x.ts"))
+        self.assertEqual(verify_gate.edit_target_path("Bash", {"command": "ls"}, cwd), "")
+        self.assertEqual(verify_gate.repo_root_of("/tmp/nothing"), "")

@@ -42,9 +42,12 @@ class ManifestTest(unittest.TestCase):
         claude_scripts = {spec["script"] for spec in manifest.claude_hooks()}
         codex_scripts = {spec["script"] for spec in manifest.codex_hooks()}
         self.assertIn("claude_auto_route.py", claude_scripts)
-        self.assertIn("claude_handoff_gate.py", claude_scripts)
         self.assertNotIn("claude_auto_route.py", codex_scripts)
         self.assertNotIn("claude_handoff_gate.py", codex_scripts)
+        with mock.patch.object(manifest, "routing_is_hard", return_value=True):
+            self.assertIn("claude_handoff_gate.py", {s["script"] for s in manifest.claude_hooks()})
+        with mock.patch.object(manifest, "routing_is_hard", return_value=False):
+            self.assertNotIn("claude_handoff_gate.py", {s["script"] for s in manifest.claude_hooks()})
 
 
 class CodexRegistrationTest(unittest.TestCase):
@@ -126,13 +129,13 @@ class ClaudeRegistrationTest(unittest.TestCase):
         self.assertIn("other_hook.py", serialized)
         self.assertNotIn("bash_gate.py", serialized)
         self.assertNotIn("obsidian_scheduler.py", serialized)
-        self.assertIn("claude_handoff_gate.py", serialized)
+        self.assertIn("context_watch.py", serialized)
         self.assertEqual(serialized.count("repo_map.py"), 1)
 
     def test_installs_every_manifest_entry(self):
         settings = self.fixture()
         register_hooks.update_settings(settings)
-        for spec in manifest.HOOKS:
+        for spec in manifest.claude_hooks():
             entries = settings["hooks"][spec["event"]]
             commands = [(e.get("matcher"), h["command"]) for e in entries for h in e["hooks"]]
             self.assertIn((spec.get("claude_matcher"), manifest.claude_command(spec["script"])),

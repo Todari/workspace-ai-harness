@@ -23,6 +23,61 @@ VERIFY_DIR = os.path.join(lib.CACHE_DIR, "verify-gate")
 HANDOFF_DIR = os.path.join(lib.CACHE_DIR, "claude-handoff")
 CODEX_RUNS_DIR = lib.CODEX_RUNS_DIR
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+CODEX_SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
+CONTEXT_WARN_TOKENS = 250_000
+
+
+def _percentile(values, ratio):
+    if not values:
+        return 0
+    values = sorted(values)
+    return values[min(len(values) - 1, int(math.ceil(ratio * len(values))) - 1)]
+
+
+def context_summary(rows):
+    """요청별 문맥(input+cache) 분포와 세션별 최대 문맥. rows: {path, usage}."""
+    per_request = []
+    per_session = {}
+    for row in rows:
+        u = row["usage"]
+        ctx = sum(int(u.get(k) or 0) for k in (
+            "input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
+        if ctx <= 0:
+            continue
+        per_request.append(ctx)
+        name = os.path.basename(row["path"])[:8]
+        per_session[name] = max(per_session.get(name, 0), ctx)
+    top = sorted(per_session.items(), key=lambda kv: kv[1], reverse=True)[:5]
+    return {
+        "requests": len(per_request),
+        "median": _percentile(per_request, 0.5),
+        "p90": _percentile(per_request, 0.9),
+        "max": max(per_request) if per_request else 0,
+        "over_warn": sum(1 for c in per_request if c >= CONTEXT_WARN_TOKENS),
+        "top_sessions": top,
+    }
+
+
+def codex_session_summary(sessions_dir=CODEX_SESSIONS_DIR, since_ts=0):
+    """Codex rollout의 마지막 token_count로 세션별 직전 문맥·누적 입력을 모은다."""
+    import context_watch
+    sessions = []
+    for path in glob.glob(os.path.join(sessions_dir, "*", "*", "*", "rollout-*.jsonl")):
+        try:
+            if os.path.getmtime(path) < since_ts:
+                continue
+        except OSError:
+            continue
+        ctx, total = context_watch.codex_usage(path)
+        if total:
+            sessions.append((os.path.basename(path)[-17:-6], ctx, total))
+    sessions.sort(key=lambda t: t[2], reverse=True)
+    return {
+        "sessions": len(sessions),
+        "total_input": sum(t[2] for t in sessions),
+        "over_warn": sum(1 for t in sessions if t[1] >= 180_000),
+        "top": sessions[:5],
+    }
 
 
 def summarize(lines, since_ts=0):
@@ -208,6 +263,7 @@ def claude_usage_summary(projects_dir=CLAUDE_PROJECTS_DIR, since_ts=0):
         "sidechain_requests": 0,
         "routes": Counter(),
         "usage": Counter(),
+        "context": context_summary(list(messages.values())),
     }
     for row in messages.values():
         summary["routes"]["%s/%s" % (row["model"], row["effort"])] += 1
@@ -253,6 +309,7 @@ def collect_report(days=7, include_claude=False):
         "codex_workers": codex_worker_summary(since_ts=since_ts),
         "claude_included": bool(include_claude),
         "claude": claude_usage_summary(since_ts=since_ts) if include_claude else None,
+        "codex_sessions": codex_session_summary(since_ts=since_ts) if include_claude else None,
     }
 
 
@@ -327,6 +384,19 @@ def main(argv=None):
             usage.get("cache_creation_input_tokens", 0),
             usage.get("cache_read_input_tokens", 0),
             usage.get("output_tokens", 0), usage.get("thinking_tokens", 0)))
+        ctx = claude.get("context") or {}
+        if ctx.get("requests"):
+            print("    요청당 문맥: 중앙값 %dk / p90 %dk / 최대 %dk, %dk 이상 %d건" % (
+                ctx["median"] // 1000, ctx["p90"] // 1000, ctx["max"] // 1000,
+                CONTEXT_WARN_TOKENS // 1000, ctx["over_warn"]))
+            print("    최대 문맥 세션: %s" % ", ".join(
+                "%s %dk" % (name, value // 1000) for name, value in ctx["top_sessions"]))
+    codex = report.get("codex_sessions")
+    if codex and codex["sessions"]:
+        print("  Codex 세션 %d개: 누적 입력 %dM, 직전 문맥 180k 이상 %d개" % (
+            codex["sessions"], codex["total_input"] // 1_000_000, codex["over_warn"]))
+        print("    상위 세션: %s" % ", ".join(
+            "%s ctx %dk/입력 %dM" % (n, c // 1000, t // 1_000_000) for n, c, t in codex["top"]))
 
 
 if __name__ == "__main__":

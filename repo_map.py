@@ -33,7 +33,8 @@ def git(repo, *args, timeout=5):
     try:
         proc = subprocess.run(
             ["git", "-C", repo] + list(args),
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, timeout=timeout,
+            env=dict(os.environ, LC_ALL="C", LANG="C"))
         return proc.stdout.strip() if proc.returncode == 0 else ""
     except (subprocess.SubprocessError, OSError):
         return ""

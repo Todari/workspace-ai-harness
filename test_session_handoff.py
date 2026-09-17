@@ -96,6 +96,22 @@ class Handoff(unittest.TestCase):
             data = {"hook_event_name": "Stop", "cwd": CWD, "thread_id": "thread-xyz"}
             self.assertEqual(sh.handle(data)["decision"], "block")
 
+    def test_precompact_writes_auto_note_but_keeps_manual(self):
+        t = tempfile.NamedTemporaryFile("w", suffix=".jsonl", delete=False)
+        t.write(json.dumps({"type": "user", "message": {"content": "자동 노트 확인"}}) + "\n"); t.close()
+        data = {"hook_event_name": "PreCompact", "cwd": CWD, "session_id": "p1", "transcript_path": t.name}
+        self.assertIsNone(sh.handle(data))
+        body, meta = sh.load(CWD)
+        self.assertTrue(meta["auto"]); self.assertIn("자동 노트 확인", body)
+        # 자동 노트만 있으면 Stop은 여전히 수동 노트를 요구한다
+        stop = {"hook_event_name": "Stop", "cwd": CWD, "session_id": "p1", "transcript_path": _transcript(600_000)}
+        self.assertEqual(sh.handle(stop)["decision"], "block")
+        sh.write(CWD, "## 목표\n수동", session_id="p1")
+        sh.handle(data)
+        body, meta = sh.load(CWD)
+        self.assertFalse(meta.get("auto")); self.assertIn("수동", body)
+        self.assertIn("자동 생성", sh.inject_text("x", {"auto": True, "written_at": 0}))
+
     def test_outside_workspace_is_ignored(self):
         self.assertIsNone(sh.handle({"hook_event_name": "SessionStart", "cwd": "/tmp", "source": "startup"}))
 

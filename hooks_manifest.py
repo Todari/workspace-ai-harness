@@ -19,21 +19,22 @@ HOOKS = (
     {"event": "SessionStart", "script": "claude_auto_route.py", "timeout": 5,
      "clients": ("claude",)},
     {"event": "UserPromptSubmit", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",)},
+     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "PreToolUse", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",)},
+     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "PostToolUse", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",)},
+     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "PostToolUseFailure", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",)},
+     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "Stop", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",)},
+     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "UserPromptSubmit", "script": "context_watch.py", "timeout": 5,
      "clients": ("claude",)},
     {"event": "PostToolUse", "script": "context_watch.py", "timeout": 5,
      "clients": ("claude",), "claude_matcher": "Bash|Read|Grep|Glob|WebFetch"},
     {"event": "SessionStart", "script": "session_handoff.py", "timeout": 5},
     {"event": "Stop", "script": "session_handoff.py", "timeout": 5},
+    {"event": "PreCompact", "script": "session_handoff.py", "timeout": 10},
     {"event": "SessionStart", "script": "repo_map.py", "timeout": 10},
     {"event": "SessionStart", "script": "obsidian_bridge.py", "timeout": 10},
     {"event": "SubagentStart", "script": "vault_subagent.py", "timeout": 10},
@@ -51,11 +52,29 @@ RETIRED_SCRIPTS = (
 OWNED_SCRIPTS = tuple(sorted({h["script"] for h in HOOKS} | set(RETIRED_SCRIPTS)))
 
 
+def routing_is_hard():
+    """orchestration/models.json routing.enforcement == "hard"일 때만 라우팅 게이트를 등록한다."""
+    try:
+        import codex_worker
+        return codex_worker.load_config()["routing"].get("enforcement", "hard") == "hard"
+    except Exception:
+        return False
+
+
+def _requirement_met(spec):
+    requires = spec.get("requires")
+    if not requires:
+        return True
+    if requires == "hard_routing":
+        return routing_is_hard()
+    return False
+
+
 def hooks_for(client):
     if client not in ("claude", "codex"):
         raise ValueError("unknown hook client: %s" % client)
     return tuple(spec for spec in HOOKS
-                 if client in spec.get("clients", ("claude", "codex")))
+                 if client in spec.get("clients", ("claude", "codex")) and _requirement_met(spec))
 
 
 def claude_hooks():

@@ -11,9 +11,8 @@ def routing_context(config):
     bypass = ", ".join('"%s"' % phrase for phrase in route["bypass_phrases"])
     if route.get("enforcement", "hard") != "hard":
         return """[Claude main: Codex delegation available, advisory]
-Work directly as usual at {planner} effort. Per-request hints may mark a request as a code change
-or investigation; they are suggestions, not routes. Delegate to a Codex worker only when the user
-asks with `{forced}` or the work is clearly long: `{model}`/{effort} for implementation,
+Work directly as usual at {planner} effort. No per-request routing hints are injected.
+Delegate to a Codex worker only when the user asks with `{forced}` or the work is clearly long: `{model}`/{effort} for implementation,
 `{inspect}` for read-only inspection. Start it with `codex_worker.py run ... --manifest - --detach`
 and collect with `codex_worker.py wait <run_id>` in the foreground; never poll or background it.
 Never delegate again inside Codex, and never commit, push, open a PR, or deploy unless asked.

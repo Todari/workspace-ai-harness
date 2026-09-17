@@ -11,6 +11,7 @@ import time
 
 import edit_detect
 import harness_lib as lib
+import repos
 
 VERIFY_DIR = os.path.join(lib.CACHE_DIR, "verify-gate")
 PATH_EDIT_TOOLS = ("Edit", "Write", "NotebookEdit")
@@ -51,6 +52,16 @@ def load_state(session_id):
             return json.load(f)
     except (OSError, ValueError):
         return {"last_edit": 0, "last_verify": 0, "last_prompted_edit": 0}
+
+
+def record_value(session_id, key, value):
+    if not session_id:
+        return
+    os.makedirs(VERIFY_DIR, exist_ok=True)
+    state = load_state(session_id)
+    state[key] = value
+    with open(_state_path(session_id), "w", encoding="utf-8") as f:
+        json.dump(state, f)
 
 
 def record(session_id, key):
@@ -228,6 +239,114 @@ def is_successful_response(tool_response):
     return not any(marker in text for marker in FAILURE_MARKERS)
 
 
+def _has_script(pkg, name):
+    return isinstance(pkg.get("scripts"), dict) and name in pkg["scripts"]
+
+
+def _pkg_manager(root):
+    for lock, pm in (("pnpm-lock.yaml", "pnpm"), ("yarn.lock", "yarn"), ("bun.lockb", "bun"), ("bun.lock", "bun")):
+        if os.path.exists(os.path.join(root, lock)):
+            return pm
+    return "npm"
+
+
+def suggest_verify_commands(root):
+    """레포 루트의 설정 파일로 검증 명령을 추정한다. repos.json의 `verify`가 있으면 그것을 우선한다."""
+    if not root:
+        return []
+    real = os.path.realpath(root)
+    try:
+        known = repos.load()
+    except Exception:
+        known = []
+    for repo in known if isinstance(known, list) else known.get("repos", []):
+        if not isinstance(repo, dict):
+            continue
+        if os.path.realpath(repos.abs_path(repo)) == real and repo.get("verify"):
+            verify = repo["verify"]
+            return list(verify) if isinstance(verify, list) else [str(verify)]
+    cmds = []
+    pkg_path = os.path.join(real, "package.json")
+    if os.path.exists(pkg_path):
+        try:
+            with open(pkg_path, encoding="utf-8") as f:
+                pkg = json.load(f)
+        except (OSError, ValueError):
+            pkg = {}
+        pm = _pkg_manager(real)
+        for name in ("typecheck", "type-check", "lint", "test", "build"):
+            if _has_script(pkg, name):
+                cmds.append("%s test" % pm if name == "test" else "%s run %s" % (pm, name))
+    py = ".venv/bin/python" if os.path.exists(os.path.join(real, ".venv", "bin", "python")) else "python3"
+    has_pytest = any(os.path.exists(os.path.join(real, n)) for n in ("pytest.ini", "conftest.py")) or \
+        _file_contains(os.path.join(real, "pyproject.toml"), "pytest")
+    if has_pytest:
+        cmds.append("%s -m pytest -q" % py)
+    elif os.path.isdir(os.path.join(real, "tests")) and any(
+            n.startswith("test") and n.endswith(".py") for n in _listdir(os.path.join(real, "tests"))):
+        cmds.append("%s -m unittest discover -s tests" % py)
+    if _file_contains(os.path.join(real, "Makefile"), "\ntest:"):
+        cmds.append("make test")
+    if os.path.exists(os.path.join(real, "Cargo.toml")):
+        cmds.append("cargo test")
+    if os.path.exists(os.path.join(real, "go.mod")):
+        cmds.append("go test ./...")
+    return cmds
+
+
+def _listdir(path):
+    try:
+        return os.listdir(path)
+    except OSError:
+        return []
+
+
+def _file_contains(path, needle):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return needle in f.read()
+    except OSError:
+        return False
+
+
+def repo_root_of(path):
+    """path에서 위로 올라가며 workspace 안의 가장 가까운 git 루트를 찾는다."""
+    if not path:
+        return ""
+    cur = os.path.realpath(path)
+    if not os.path.isdir(cur):
+        cur = os.path.dirname(cur)
+    while lib.in_workspace(cur):
+        if os.path.exists(os.path.join(cur, ".git")):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            break
+        cur = parent
+    return ""
+
+
+def edit_target_path(tool_name, tool_input, cwd=""):
+    tool_input = tool_input or {}
+    try:
+        path = edit_detect.target_path(tool_input)
+    except Exception:
+        path = None
+    if not path and tool_name in SHELL_TOOLS:
+        described = edit_detect.find_write_target(command_from(tool_input), cwd) or ""
+        path = described.split("→", 1)[1].strip() if "→" in described else ""
+    if not path:
+        return ""
+    return path if os.path.isabs(path) else os.path.join(cwd or "", path)
+
+
+def block_reason(root):
+    cmds = suggest_verify_commands(root)
+    if not cmds:
+        return VERIFY_MESSAGE
+    return VERIFY_MESSAGE + "\n제안(%s):\n" % root + "\n".join("  - `%s`" % c for c in cmds)
+
+
 def command_from(tool_input):
     tool_input = tool_input or {}
     return tool_input.get("command") or tool_input.get("cmd") or ""
@@ -282,6 +401,9 @@ def handle(data):
         # 검증이 묻히지 않는다. 편집을 먼저 기록해 같은 초에 들어와도 검증이 뒤에 온다.
         if is_source_edit(tool, data.get("tool_input"), data.get("cwd", "")):
             record(session_id, "last_edit")
+            root = repo_root_of(edit_target_path(tool, data.get("tool_input"), data.get("cwd", "")))
+            if root:
+                record_value(session_id, "last_edit_root", root)
         if tool in SHELL_TOOLS and is_verify_command(command_from(data.get("tool_input"))) \
                 and is_successful_response(data.get("tool_response")):
             record(session_id, "last_verify")
@@ -297,7 +419,8 @@ def handle(data):
             os.makedirs(VERIFY_DIR, exist_ok=True)
             with open(_state_path(session_id), "w", encoding="utf-8") as f:
                 json.dump(state, f)
-            return {"decision": "block", "reason": VERIFY_MESSAGE}
+            return {"decision": "block",
+                    "reason": block_reason(state.get("last_edit_root") or repo_root_of(data.get("cwd", "")))}
     return None
 
 

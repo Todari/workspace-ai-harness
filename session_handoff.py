@@ -63,7 +63,7 @@ def save_meta(cwd, meta):
         json.dump(meta, f, ensure_ascii=False)
 
 
-def write(cwd, body, session_id="", client="claude"):
+def write(cwd, body, session_id="", client="claude", auto=False):
     body = (body or "").strip()
     if not body:
         raise ValueError("인계 내용이 비어 있다")
@@ -72,9 +72,9 @@ def write(cwd, body, session_id="", client="claude"):
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(body + "\n")
     meta = {"cwd": os.path.realpath(cwd or os.getcwd()), "session_id": session_id,
-            "client": client, "written_at": time.time(), "consumed_by": []}
+            "client": client, "written_at": time.time(), "consumed_by": [], "auto": auto}
     save_meta(cwd, meta)
-    lib.event("handoff-write", session_id, str(len(body)))
+    lib.event("handoff-auto" if auto else "handoff-write", session_id, str(len(body)))
     return md_path
 
 
@@ -128,11 +128,11 @@ def stop_reason(data, session_id):
 def inject_text(body, meta):
     when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(meta.get("written_at", 0))))
     return (
-        "[SESSION HANDOFF] %s에 %s 세션(%s)이 남긴 인계 노트. 시작할 때 이어갈지 사용자에게 한 줄로 "
+        "[SESSION HANDOFF] %s에 %s 세션(%s)이 남긴 %s인계 노트. 시작할 때 이어갈지 사용자에게 한 줄로 "
         "확인하고, 이어가거나 폐기하면 `python3 %s done --cwd %s`를 실행한다. "
         "현재 코드·git 상태가 노트와 다르면 현재 상태를 우선한다.\n---\n%s"
     ) % (when, meta.get("client", "claude"), (meta.get("session_id") or "")[:8],
-         SCRIPT, meta.get("cwd", ""), body.strip())
+         "자동 생성 " if meta.get("auto") else "", SCRIPT, meta.get("cwd", ""), body.strip())
 
 
 def _stop_state_path(cwd):
@@ -173,6 +173,8 @@ def handle(data, now=None):
         save_meta(cwd, meta)
         lib.event("handoff-inject", session_id, meta.get("session_id", "")[:8])
         return inject_text(body, meta)
+    if event == "PreCompact":
+        return pre_compact(data, cwd, session_id)
     if event == "Stop":
         if data.get("stop_hook_active"):
             return None
@@ -182,12 +184,29 @@ def handle(data, now=None):
         if session_id in _prompted_sessions(cwd):
             return None
         _, meta = load(cwd)
-        if meta.get("session_id") == session_id:
+        if meta.get("session_id") == session_id and not meta.get("auto"):
             return None  # 이미 이 세션이 인계 노트를 남겼다
         _mark_prompted(cwd, session_id)
         lib.event("handoff-block", session_id, str(tokens))
         return {"decision": "block",
                 "reason": write_instruction(cwd, session_id, tokens, client, reason)}
+    return None
+
+
+def pre_compact(data, cwd, session_id):
+    """압축 직전: 이 세션의 수동 노트가 없으면 트랜스크립트에서 자동 노트를 만들어 둔다."""
+    import handoff_extract
+    _, meta = load(cwd)
+    if meta.get("session_id") == session_id and not meta.get("auto"):
+        return None
+    path = data.get("transcript_path", "")
+    client = "codex" if context_watch.is_codex_transcript(path) else "claude"
+    if client == "codex" and not path:
+        path = context_watch.find_codex_transcript(session_id)
+    body = handoff_extract.build_note(path, cwd, client)
+    if not body:
+        return None
+    write(cwd, body, session_id, client, auto=True)
     return None
 
 
