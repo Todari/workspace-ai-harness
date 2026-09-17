@@ -2,6 +2,8 @@
 # Called through ops_report.py run; exit status must reach the job receipt.
 set -eu
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# cron passes LOGNAME but not USER; the Claude CLI keychain lookup needs USER or it reports "Not logged in".
+export USER="${USER:-${LOGNAME:-$(id -un)}}"
 HARNESS_DIR=${0:A:h:h}
 VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/docs}"
 WORKSPACE="${WORKSPACE_HARNESS_ROOT:-$HOME/workspace}"
