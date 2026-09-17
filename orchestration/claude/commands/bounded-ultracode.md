@@ -12,8 +12,8 @@ Hard constraints:
 - First run on at most three representative files or one directory.
 - No nested agents and no worker-created workers.
 - Use Fable only for initial architecture or final high-risk judgment.
-- Route implementation to `codex_worker.py`; use Codex high by default and
-  xhigh only for difficult leaf work with a measured quality benefit.
+- Route implementation to `codex_worker.py` with worker_effort=auto and an accurate task_class.
+  Escalate a resumed task only after repeated reasoning/verification failures; preserve explicit choices.
 - Allow only one writer per worktree. Independent parallel workers require
   separate git worktrees.
 - After the small slice, report Codex run IDs, model/effort, token usage,

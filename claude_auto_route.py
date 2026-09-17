@@ -15,6 +15,8 @@ Work directly as usual at {planner} effort. No per-request routing hints are inj
 Delegate to a Codex worker only when the user asks with `{forced}` or the work is clearly long: `{model}`/{effort} for implementation,
 `{inspect}` for read-only inspection. Start it with `codex_worker.py run ... --manifest - --detach`
 and collect with `codex_worker.py wait <run_id>` in the foreground; never poll or background it.
+Omit worker_effort for task_class-based selection; explicit settings win. Resume to retain context.
+Use resume --escalate only for repeated reasoning failures, not network/permission/data errors.
 Never delegate again inside Codex, and never commit, push, open a PR, or deploy unless asked.
 """.format(planner=planner["default_effort"], forced=route["forced_command"],
            model=worker["model"], effort=worker["default_effort"],

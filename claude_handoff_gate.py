@@ -209,7 +209,8 @@ def route_context(route, state, config):
         ).format(workers=routing["max_batch_worker_calls"], chars=routing["max_contract_chars"],
                  session=session, common=common)
     task_mode = "inspect" if route == "inspect" else "implement"
-    effort = worker["inspection_effort"] if route == "inspect" else worker["default_effort"]
+    effort = ("auto" if config.get("execution_profiles") else
+              worker["inspection_effort"] if route == "inspect" else worker["default_effort"])
     return (
         "[HARNESS ROUTE=CODEX_{label}] Do not inspect or edit the repository in Claude, and do not "
         "read codex_worker.py or its --help; the full contract shape is here. Create one manifest "

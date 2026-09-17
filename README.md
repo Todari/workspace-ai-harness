@@ -26,6 +26,31 @@ Claude Code와 Codex가 같은 작업 공간에서 공통 프로젝트 컨텍스
 
 ## 요구 사항
 
+### 작업별 실행 비용 조절
+
+`orchestration/models.json`의 `execution_profiles`가 Codex worker의 선택 기준이다.
+manifest의 effort를 생략하거나 `worker_effort: "auto"`로 두면 다음을 적용한다.
+
+| 작업 | 모델 | effort |
+|---|---|---|
+| simple: 명확하고 좁은 작업 | gpt-5.6-luna | low |
+| medium: 일반 구현·조사 | gpt-5.6-sol | medium |
+| complex / high_risk / batch_or_repo_wide | gpt-5.6-sol | high |
+| 반복 추론 실패 후 명시적 승격 | gpt-5.6-sol | 최대 xhigh |
+
+인증·결제·마이그레이션·장애 등은 simple로 분류돼도 high를 기본으로 선택한다.
+`--model`, `--effort` 또는 manifest의 `worker_model`, `auto` 이외의 명시적 effort 값은 자동 선택보다 우선한다.
+후속 `resume`·`rerun`은 기존 선택을 유지한다. 반복된 추론·검증 가설 실패를 확인한 에이전트는
+`resume RUN_ID --instruction "실패한 가설과 확인된 근거를 이어서 해결" --escalate`를 사용한다.
+네트워크·권한·사용량 제한·자료 부족으로 승격하거나 자동 유료 재시도를 돌리지 않는다.
+명시적으로 고정한 모델·effort는 승격 플래그로도 덮어쓰지 않는다.
+
+분류에는 추가 LLM 호출이 없다. run 기록의 실제 모델·effort·usage와 parent_run_id를 통해
+재시도를 합한 사용량·완료율을 비교한다. 절감률이나 모델의 계정별 사용 가능 여부는 추정하지 않는다.
+이 정책은 하네스가 시작한 worker에 적용되며, 이미 열린 Codex/Claude 메인 대화의 모델을 변경하지 않는다.
+
+### 실행 환경
+
 - Python 3.8 이상
 - Claude Code 2.1.251 이상(modelSettings·현재 훅 응답 형식) 또는 Codex 0.151 이상
 - Git
@@ -126,11 +151,6 @@ context/local/
 구현에만 Codex `xhigh`를 사용합니다. `register_orchestration.py`는 선언만 바꾸는 것이 아니라
 Claude의 실제 Fable 기본 effort도 `medium`으로 동기화합니다.
 
-- `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
-- `session_handoff.py`: 세션 인계. Stop에서 문맥 50만 토큰 이상이면 한 번 차단해 인계 노트(`write`)를 쓰게 하고, 같은 경로의 다음 Claude·Codex 세션 SessionStart에 주입(72시간, 세션당 1회). `/handoff`로 수동 저장, `done`으로 폐기. Codex는 rollout의 token_count로 판단(직전 턴 18만 토큰↑ 또는 누적 입력 4천만↑)
-- `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
-- `session_handoff.py`: 세션 인계. Stop에서 문맥 50만 토큰 이상이면 한 번 차단해 인계 노트(`write`)를 쓰게 하고, 같은 경로의 다음 Claude·Codex 세션 SessionStart에 주입(72시간, 세션당 1회). `/handoff`로 수동 저장, `done`으로 폐기
-- `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
 `직접 해줘`, `Claude가 직접 해줘`, `Codex 쓰지 마`, `위임하지 마`라고 하면 Claude가 직접
 처리합니다. 반대로 `/delegate-codex <작업>`은 자동 분류와 무관하게 Codex 위임을 강제합니다.
 자동 정책은 Claude 훅에만 등록되므로 Codex worker가 다시 자신을 호출하지 않습니다.

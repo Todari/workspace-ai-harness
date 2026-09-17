@@ -1,6 +1,12 @@
 {
   "schema_version": 2,
-  "last_reviewed": "2026-09-07",
+  "last_reviewed": "2026-09-11",
+  "execution_profiles": [
+    {"model": "gpt-5.6-luna", "effort": "low"},
+    {"model": "gpt-5.6-sol", "effort": "medium"},
+    {"model": "gpt-5.6-sol", "effort": "high"},
+    {"model": "gpt-5.6-sol", "effort": "xhigh"}
+  ],
   "review_interval_days": 90,
   "planner": {
     "provider": "anthropic",
@@ -15,7 +21,7 @@
   "worker": {
     "provider": "openai",
     "model": "gpt-5.6-sol",
-    "default_effort": "high",
+    "default_effort": "medium",
     "inspection_effort": "medium",
     "escalation_effort": "xhigh",
     "sandbox": "workspace-write",
@@ -119,6 +125,15 @@
       "evidence": [
         "local Claude usage audit 2026-09-07 (route-block 28건, result_ready without run 3세션)"
       ]
+    },
+    {
+      "effective_date": "2026-09-11",
+      "planner_model": "fable",
+      "planner_effort": "medium",
+      "worker_model": "gpt-5.6-sol",
+      "worker_effort": "medium",
+      "routing_mode": "hard_handoff",
+      "reason": "작업별 low/medium/high 선택. 명시 지정 우선, 재개 시 유지, 반복 추론 실패에만 승격. advisory 유지."
     }
   ]
 }

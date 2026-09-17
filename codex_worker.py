@@ -25,6 +25,7 @@ import tempfile
 import time
 
 import harness_lib as lib
+from execution_policy import select_profile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(HERE, "orchestration", "models.json")
@@ -36,7 +37,7 @@ TASK_CLASSES = frozenset(("simple", "medium", "complex", "high_risk", "batch_or_
 TASK_MODES = frozenset(("implement", "inspect"))
 EFFORTS = frozenset(("none", "low", "medium", "high", "xhigh", "max"))
 MANIFEST_KEYS = frozenset((
-    "task_mode", "task_class", "objective", "worker_effort", "scope",
+    "task_mode", "task_class", "objective", "worker_effort", "worker_model", "scope",
     "acceptance_criteria", "constraints", "verification_commands",
 ))
 MAX_STATUS_LINES = 200
@@ -64,6 +65,12 @@ def read_json(path, label):
 
 def model_config_errors(data):
     errors = []
+    profiles = data.get("execution_profiles")
+    if profiles is not None and (not isinstance(profiles, list) or len(profiles) != 4
+            or any(not isinstance(p, dict) or not isinstance(p.get("model"), str)
+                   or not p["model"] or p.get("effort") != level
+                   for p, level in zip(profiles, ("low", "medium", "high", "xhigh")))):
+        errors.append("execution_profiles는 low/medium/high/xhigh 모델 4개가 필요함")
     if data.get("schema_version") != 2:
         errors.append("schema_version은 2여야 함")
     if not isinstance(data.get("last_reviewed"), str):
@@ -192,8 +199,11 @@ def normalize_manifest(data, default_effort="high", max_contract_chars=0):
     if task_class not in TASK_CLASSES:
         raise WorkerError("유효하지 않은 task_class: %s" % task_class)
     effort = data.get("worker_effort", default_effort)
-    if effort not in EFFORTS:
+    if effort not in EFFORTS | {"auto"}:
         raise WorkerError("유효하지 않은 worker_effort: %s" % effort)
+    model = data.get("worker_model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise WorkerError("worker_model은 비어 있지 않은 문자열이어야 함")
     scope = _string_list(data, "scope")
     for item in scope:
         normalized = os.path.normpath(item)
@@ -212,6 +222,8 @@ def normalize_manifest(data, default_effort="high", max_contract_chars=0):
         "constraints": _string_list(data, "constraints", required=False),
         "verification_commands": _string_list(data, "verification_commands"),
     }
+    if model:
+        normalized["worker_model"] = model
     contract_chars = len(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
     if max_contract_chars and contract_chars > max_contract_chars:
         raise WorkerError("작업 계약이 %d자 상한을 초과함: %d자" % (
@@ -802,6 +814,8 @@ def build_parser():
     add_execution_args(resume)
     resume.add_argument("run_id")
     resume.add_argument("--instruction", required=True)
+    resume.add_argument("--escalate", action="store_true",
+                        help="추론·검증 가설이 반복 실패했을 때만 한 단계 승격. 네트워크·권한 오류에는 사용하지 않음")
 
     rerun = sub.add_parser("rerun", help="저장된 작업 계약을 새 세션에서 다시 실행")
     add_execution_args(rerun)
@@ -842,13 +856,16 @@ def main(argv=None):
             if args.command == "run":
                 manifest = load_manifest(
                     args.manifest,
-                    default_effort=worker["default_effort"],
-                    inspection_effort=worker["inspection_effort"],
+                    default_effort="auto" if config.get("execution_profiles") else worker["default_effort"],
+                    inspection_effort="auto" if config.get("execution_profiles") else worker["inspection_effort"],
                     max_contract_chars=(config["routing"]["max_contract_chars"]
                                         if args.orchestrator_session else 0))
                 repo = resolve_repo(args.repo)
-                model = args.model or worker["model"]
-                effort = args.effort or manifest["worker_effort"] or worker["default_effort"]
+                if args.model:
+                    manifest["worker_model"] = args.model
+                if args.effort:
+                    manifest["worker_effort"] = args.effort
+                model, effort = select_profile(manifest, config)
                 ignore_user_config = (False if args.with_user_config else
                                       worker["ignore_user_config"])
                 if args.detach and not args.dry_run:
@@ -866,8 +883,11 @@ def main(argv=None):
                 if args.command == "resume":
                     if not parent.get("thread_id"):
                         raise WorkerError("기존 실행에 thread_id가 없어 resume할 수 없음")
-                    model = args.model or parent.get("model") or worker["model"]
-                    effort = args.effort or parent.get("effort") or worker["default_effort"]
+                    if args.model:
+                        manifest["worker_model"] = args.model
+                    if args.effort:
+                        manifest["worker_effort"] = args.effort
+                    model, effort = select_profile(manifest, config, parent, args.escalate)
                     ignore_user_config = (False if args.with_user_config else
                                           parent.get("ignore_user_config",
                                                      worker["ignore_user_config"]))
@@ -878,9 +898,11 @@ def main(argv=None):
                         parent_record=parent, ignore_user_config=ignore_user_config,
                         orchestrator_session=args.orchestrator_session)
                 else:
-                    model = args.model or worker["model"]
-                    effort = args.effort or worker["default_effort"]
-                    manifest["worker_effort"] = effort
+                    if args.model:
+                        manifest["worker_model"] = args.model
+                    if args.effort:
+                        manifest["worker_effort"] = args.effort
+                    model, effort = select_profile(manifest, config, parent)
                     output = execute(
                         "rerun", repo, manifest, model, effort, config, timeout,
                         parent_run_id=args.run_id, dry_run=args.dry_run,
