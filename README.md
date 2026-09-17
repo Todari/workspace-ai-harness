@@ -123,6 +123,7 @@ context/local/
 구현에만 Codex `xhigh`를 사용합니다. `register_orchestration.py`는 선언만 바꾸는 것이 아니라
 Claude의 실제 Fable 기본 effort도 `medium`으로 동기화합니다.
 
+- `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
 `직접 해줘`, `Claude가 직접 해줘`, `Codex 쓰지 마`, `위임하지 마`라고 하면 Claude가 직접
 처리합니다. 반대로 `/delegate-codex <작업>`은 자동 분류와 무관하게 Codex 위임을 강제합니다.
 자동 정책은 Claude 훅에만 등록되므로 Codex worker가 다시 자신을 호출하지 않습니다.
