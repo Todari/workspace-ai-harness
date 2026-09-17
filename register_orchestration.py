@@ -21,6 +21,7 @@ ASSETS = (
     ("agents/fable-architect.md", "agents/fable-architect.md"),
     ("commands/delegate-codex.md", "commands/delegate-codex.md"),
     ("commands/bounded-ultracode.md", "commands/bounded-ultracode.md"),
+    ("commands/handoff.md", "commands/handoff.md"),
 )
 
 

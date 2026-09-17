@@ -48,7 +48,7 @@ def last_context_tokens(transcript_path):
 def context_advice(tokens):
     if tokens >= RESTART_TOKENS:
         return ("[CONTEXT WATCH] 직전 요청 문맥 %dk 토큰. 매 요청이 이 크기로 과금된다. "
-                "지금 답변을 마치면 사용자에게 새 세션 시작을 권하고, 이어갈 상태는 메모리·볼트에 남긴다. "
+                "이번 답변을 마칠 때 `/handoff` 절차로 인계 노트를 저장하고 사용자에게 새 세션 시작을 권한다. "
                 "도구 출력은 head/tail/grep으로 자른다." % (tokens // 1000))
     if tokens >= COMPACT_TOKENS:
         return ("[CONTEXT WATCH] 직전 요청 문맥 %dk 토큰. 작업 단위가 끝나면 `/compact`를 권하고, "

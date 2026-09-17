@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""세션 인계 자동화.
+
+긴 세션의 문맥이 한계에 가까워지면 Stop 훅이 한 번 차단해 인계 노트를 쓰게 하고,
+같은 경로에서 열리는 다음 세션(Claude·Codex)의 SessionStart가 그 노트를 주입한다.
+
+CLI:
+  session_handoff.py write [--cwd C] [--session S] [--client claude|codex] [--file F]  # 기본 stdin
+  session_handoff.py show [--cwd C]
+  session_handoff.py done [--cwd C]        # 인계 완료·폐기
+  session_handoff.py list
+훅 입력(JSON)이 stdin으로 오면 훅 모드로 동작한다.
+"""
+import argparse
+import hashlib
+import json
+import os
+import sys
+import time
+
+import context_watch
+import harness_lib as lib
+
+HANDOFF_DIR = os.path.join(lib.CACHE_DIR, "session-handoff")
+HANDOFF_TTL_SECONDS = 72 * 3600
+RESTART_TOKENS = context_watch.RESTART_TOKENS
+INJECT_SOURCES = ("", "startup", "clear")  # resume·compact 재개에는 다시 주입하지 않는다
+SECTIONS = ("목표", "결정", "진행", "검증 상태", "다음 할 일", "주의")
+SCRIPT = os.path.abspath(__file__)
+
+
+def key_for(cwd):
+    real = os.path.realpath(cwd or os.getcwd())
+    return hashlib.sha1(real.encode("utf-8")).hexdigest()[:12]
+
+
+def _paths(cwd):
+    key = key_for(cwd)
+    return (os.path.join(HANDOFF_DIR, key + ".md"),
+            os.path.join(HANDOFF_DIR, key + ".json"))
+
+
+def load(cwd):
+    md_path, meta_path = _paths(cwd)
+    try:
+        with open(md_path, encoding="utf-8") as f:
+            body = f.read()
+        with open(meta_path, encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None, {}
+    if time.time() - float(meta.get("written_at", 0)) > HANDOFF_TTL_SECONDS:
+        return None, {}
+    return body, meta
+
+
+def save_meta(cwd, meta):
+    _, meta_path = _paths(cwd)
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+
+
+def write(cwd, body, session_id="", client="claude"):
+    body = (body or "").strip()
+    if not body:
+        raise ValueError("인계 내용이 비어 있다")
+    os.makedirs(HANDOFF_DIR, exist_ok=True)
+    md_path, _ = _paths(cwd)
+    with open(md_path, "w", encoding="utf-8") as f:
+        f.write(body + "\n")
+    meta = {"cwd": os.path.realpath(cwd or os.getcwd()), "session_id": session_id,
+            "client": client, "written_at": time.time(), "consumed_by": []}
+    save_meta(cwd, meta)
+    lib.event("handoff-write", session_id, str(len(body)))
+    return md_path
+
+
+def done(cwd):
+    removed = False
+    for path in _paths(cwd):
+        try:
+            os.remove(path)
+            removed = True
+        except OSError:
+            pass
+    return removed
+
+
+def missing_sections(body):
+    return [s for s in SECTIONS if s not in body]
+
+
+def write_instruction(cwd, session_id, tokens):
+    return (
+        "[SESSION HANDOFF] 직전 요청 문맥 %dk 토큰. 이 세션은 여기서 끝내야 한다. 지금 다음을 한다.\n"
+        "1. 인계 노트를 저장한다(heredoc, 절 제목은 그대로): "
+        "`python3 %s write --cwd %s --session %s <<'EOF'` … `EOF`\n"
+        "   절: %s. 다음 할 일은 명령·파일 경로까지 구체적으로, 검증 상태는 실행한 테스트와 결과.\n"
+        "2. 메모리·볼트에 남길 결정이 있으면 남긴다.\n"
+        "3. 사용자에게 새 세션을 열면 인계 노트가 자동 주입된다고 한 줄로 알린다."
+    ) % (tokens // 1000, SCRIPT, cwd, session_id or "unknown", " / ".join(SECTIONS))
+
+
+def inject_text(body, meta):
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(float(meta.get("written_at", 0))))
+    return (
+        "[SESSION HANDOFF] %s에 %s 세션(%s)이 남긴 인계 노트. 시작할 때 이어갈지 사용자에게 한 줄로 "
+        "확인하고, 이어가거나 폐기하면 `python3 %s done --cwd %s`를 실행한다. "
+        "현재 코드·git 상태가 노트와 다르면 현재 상태를 우선한다.\n---\n%s"
+    ) % (when, meta.get("client", "claude"), (meta.get("session_id") or "")[:8],
+         SCRIPT, meta.get("cwd", ""), body.strip())
+
+
+def _stop_state_path(cwd):
+    return os.path.join(HANDOFF_DIR, key_for(cwd) + ".stop.json")
+
+
+def _prompted_sessions(cwd):
+    try:
+        with open(_stop_state_path(cwd), encoding="utf-8") as f:
+            return set(json.load(f))
+    except (OSError, ValueError):
+        return set()
+
+
+def _mark_prompted(cwd, session_id):
+    os.makedirs(HANDOFF_DIR, exist_ok=True)
+    prompted = _prompted_sessions(cwd) | {session_id}
+    with open(_stop_state_path(cwd), "w", encoding="utf-8") as f:
+        json.dump(sorted(prompted), f)
+
+
+def handle(data, now=None):
+    """SessionStart → 주입 텍스트(str) 또는 None. Stop → block dict 또는 None."""
+    cwd = data.get("cwd", "")
+    if not lib.in_workspace(cwd):
+        return None
+    event = data.get("hook_event_name", "")
+    session_id = data.get("session_id") or data.get("thread_id") or ""
+    if event == "SessionStart":
+        if data.get("source", "") not in INJECT_SOURCES:
+            return None
+        body, meta = load(cwd)
+        if not body or session_id in meta.get("consumed_by", []):
+            return None
+        if session_id and session_id == meta.get("session_id"):
+            return None  # 자기 자신이 쓴 노트
+        meta.setdefault("consumed_by", []).append(session_id)
+        save_meta(cwd, meta)
+        lib.event("handoff-inject", session_id, meta.get("session_id", "")[:8])
+        return inject_text(body, meta)
+    if event == "Stop":
+        if data.get("stop_hook_active"):
+            return None
+        tokens = context_watch.last_context_tokens(data.get("transcript_path", ""))
+        if tokens < RESTART_TOKENS:
+            return None
+        if session_id in _prompted_sessions(cwd):
+            return None
+        _, meta = load(cwd)
+        if meta.get("session_id") == session_id:
+            return None  # 이미 이 세션이 인계 노트를 남겼다
+        _mark_prompted(cwd, session_id)
+        lib.event("handoff-block", session_id, str(tokens))
+        return {"decision": "block", "reason": write_instruction(cwd, session_id, tokens)}
+    return None
+
+
+def hook_main(data):
+    result = handle(data)
+    if isinstance(result, dict):
+        print(json.dumps(result, ensure_ascii=False))
+    elif result:
+        print(lib.hook_output("SessionStart", result))
+
+
+def cli_main(argv):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    w = sub.add_parser("write")
+    w.add_argument("--cwd", default=os.getcwd())
+    w.add_argument("--session", default="")
+    w.add_argument("--client", default="claude")
+    w.add_argument("--file")
+    s = sub.add_parser("show")
+    s.add_argument("--cwd", default=os.getcwd())
+    d = sub.add_parser("done")
+    d.add_argument("--cwd", default=os.getcwd())
+    sub.add_parser("list")
+    args = parser.parse_args(argv)
+    if args.cmd == "write":
+        body = open(args.file, encoding="utf-8").read() if args.file else sys.stdin.read()
+        path = write(args.cwd, body, args.session, args.client)
+        gaps = missing_sections(body)
+        print("saved:", path)
+        if gaps:
+            print("경고: 빠진 절 -", ", ".join(gaps))
+    elif args.cmd == "show":
+        body, meta = load(args.cwd)
+        print(inject_text(body, meta) if body else "인계 노트 없음")
+    elif args.cmd == "done":
+        print("removed" if done(args.cwd) else "인계 노트 없음")
+    elif args.cmd == "list":
+        try:
+            names = sorted(n for n in os.listdir(HANDOFF_DIR) if n.endswith(".json")
+                           and not n.endswith(".stop.json"))
+        except OSError:
+            names = []
+        for name in names:
+            with open(os.path.join(HANDOFF_DIR, name), encoding="utf-8") as f:
+                meta = json.load(f)
+            age_h = (time.time() - float(meta.get("written_at", 0))) / 3600
+            print("%s  %.1fh  %s  consumed=%d" % (name[:-5], age_h, meta.get("cwd", ""),
+                                                 len(meta.get("consumed_by", []))))
+
+
+def main():
+    if len(sys.argv) > 1:
+        cli_main(sys.argv[1:])
+        return
+    hook_main(lib.read_hook_input())
+
+
+if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        main()
+    else:
+        lib.run_fail_open(main)
