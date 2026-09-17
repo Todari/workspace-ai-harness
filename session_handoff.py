@@ -24,6 +24,9 @@ import harness_lib as lib
 HANDOFF_DIR = os.path.join(lib.CACHE_DIR, "session-handoff")
 HANDOFF_TTL_SECONDS = 72 * 3600
 RESTART_TOKENS = context_watch.RESTART_TOKENS
+# Codex: 창 25.8만, 자동 압축 16만 설정. 압축을 넘겨 문맥이 커졌거나 누적 입력이 큰 세션은 인계한다.
+CODEX_RESTART_TOKENS = 180_000
+CODEX_TOTAL_INPUT_TOKENS = 40_000_000
 INJECT_SOURCES = ("", "startup", "clear")  # resume·compact 재개에는 다시 주입하지 않는다
 SECTIONS = ("목표", "결정", "진행", "검증 상태", "다음 할 일", "주의")
 SCRIPT = os.path.abspath(__file__)
@@ -90,15 +93,36 @@ def missing_sections(body):
     return [s for s in SECTIONS if s not in body]
 
 
-def write_instruction(cwd, session_id, tokens):
+def write_instruction(cwd, session_id, tokens, client="claude", reason=""):
     return (
-        "[SESSION HANDOFF] 직전 요청 문맥 %dk 토큰. 이 세션은 여기서 끝내야 한다. 지금 다음을 한다.\n"
+        "[SESSION HANDOFF] %s. 이 세션은 여기서 끝내야 한다. 지금 다음을 한다.\n"
         "1. 인계 노트를 저장한다(heredoc, 절 제목은 그대로): "
-        "`python3 %s write --cwd %s --session %s <<'EOF'` … `EOF`\n"
+        "`python3 %s write --cwd %s --session %s --client %s <<'EOF'` … `EOF`\n"
         "   절: %s. 다음 할 일은 명령·파일 경로까지 구체적으로, 검증 상태는 실행한 테스트와 결과.\n"
         "2. 메모리·볼트에 남길 결정이 있으면 남긴다.\n"
         "3. 사용자에게 새 세션을 열면 인계 노트가 자동 주입된다고 한 줄로 알린다."
-    ) % (tokens // 1000, SCRIPT, cwd, session_id or "unknown", " / ".join(SECTIONS))
+    ) % (reason or "직전 요청 문맥 %dk 토큰" % (tokens // 1000), SCRIPT, cwd,
+         session_id or "unknown", client, " / ".join(SECTIONS))
+
+
+def stop_reason(data, session_id):
+    """(client, 문맥 토큰, 사유 문자열). 인계가 필요 없으면 사유는 빈 문자열."""
+    path = data.get("transcript_path", "")
+    codex = context_watch.is_codex_transcript(path) or (not path and bool(
+        context_watch.find_codex_transcript(session_id)))
+    if codex:
+        path = path or context_watch.find_codex_transcript(session_id)
+        ctx, total = context_watch.codex_usage(path)
+        if ctx >= CODEX_RESTART_TOKENS:
+            return "codex", ctx, "직전 턴 문맥 %dk 토큰(창 %dk)" % (
+                ctx // 1000, CODEX_RESTART_TOKENS // 1000)
+        if total >= CODEX_TOTAL_INPUT_TOKENS:
+            return "codex", ctx, "세션 누적 입력 %dM 토큰" % (total // 1_000_000)
+        return "codex", ctx, ""
+    tokens = context_watch.last_context_tokens(path)
+    if tokens >= RESTART_TOKENS:
+        return "claude", tokens, "직전 요청 문맥 %dk 토큰" % (tokens // 1000)
+    return "claude", tokens, ""
 
 
 def inject_text(body, meta):
@@ -152,8 +176,8 @@ def handle(data, now=None):
     if event == "Stop":
         if data.get("stop_hook_active"):
             return None
-        tokens = context_watch.last_context_tokens(data.get("transcript_path", ""))
-        if tokens < RESTART_TOKENS:
+        client, tokens, reason = stop_reason(data, session_id)
+        if not reason:
             return None
         if session_id in _prompted_sessions(cwd):
             return None
@@ -162,7 +186,8 @@ def handle(data, now=None):
             return None  # 이미 이 세션이 인계 노트를 남겼다
         _mark_prompted(cwd, session_id)
         lib.event("handoff-block", session_id, str(tokens))
-        return {"decision": "block", "reason": write_instruction(cwd, session_id, tokens)}
+        return {"decision": "block",
+                "reason": write_instruction(cwd, session_id, tokens, client, reason)}
     return None
 
 

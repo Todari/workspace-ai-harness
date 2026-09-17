@@ -64,6 +64,38 @@ class Handoff(unittest.TestCase):
         self.assertTrue(sh.done(CWD))
         self.assertFalse(sh.done(CWD))
 
+    def _codex_rollout(self, ctx, total):
+        f = tempfile.NamedTemporaryFile("w", prefix="rollout-2026-09-17T00-00-00-abc-", suffix=".jsonl",
+                                        delete=False)
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": None}}) + "\n")
+        f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+            "total_token_usage": {"input_tokens": total},
+            "last_token_usage": {"input_tokens": ctx - 100, "output_tokens": 100}}}}) + "\n")
+        f.close()
+        return f.name
+
+    def test_codex_stop_blocks_on_context_or_cumulative_input(self):
+        data = {"hook_event_name": "Stop", "cwd": CWD, "session_id": "c1",
+                "transcript_path": self._codex_rollout(120_000, 1_000_000)}
+        self.assertIsNone(sh.handle(data))
+        big = dict(data, session_id="c2", transcript_path=self._codex_rollout(200_000, 1_000_000))
+        res = sh.handle(big)
+        self.assertEqual(res["decision"], "block")
+        self.assertIn("--client codex", res["reason"])
+        self.assertIn("직전 턴 문맥 200k", res["reason"])
+        heavy = dict(data, session_id="c3", transcript_path=self._codex_rollout(100_000, 50_000_000))
+        self.assertIn("누적 입력 50M", sh.handle(heavy)["reason"])
+
+    def test_codex_transcript_lookup_by_session_id(self):
+        with mock.patch.object(sh.context_watch, "CODEX_SESSIONS_DIR", self.tmp):
+            d = os.path.join(self.tmp, "2026", "09", "17")
+            os.makedirs(d)
+            path = os.path.join(d, "rollout-2026-09-17T00-00-00-thread-xyz.jsonl")
+            open(path, "w").write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                "total_token_usage": {"input_tokens": 1}, "last_token_usage": {"input_tokens": 190_000}}}}) + "\n")
+            data = {"hook_event_name": "Stop", "cwd": CWD, "thread_id": "thread-xyz"}
+            self.assertEqual(sh.handle(data)["decision"], "block")
+
     def test_outside_workspace_is_ignored(self):
         self.assertIsNone(sh.handle({"hook_event_name": "SessionStart", "cwd": "/tmp", "source": "startup"}))
 

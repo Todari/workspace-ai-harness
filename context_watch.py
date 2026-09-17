@@ -45,6 +45,49 @@ def last_context_tokens(transcript_path):
     return 0
 
 
+CODEX_SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
+
+
+def is_codex_transcript(path):
+    return os.path.basename(path or "").startswith("rollout-")
+
+
+def codex_usage(transcript_path):
+    """Codex rollout의 마지막 token_count에서 (직전 턴 문맥, 세션 누적 입력) 토큰을 돌려준다."""
+    if not transcript_path:
+        return 0, 0
+    try:
+        size = os.path.getsize(transcript_path)
+        with open(transcript_path, "rb") as f:
+            f.seek(max(0, size - TAIL_BYTES))
+            chunk = f.read().decode("utf-8", "ignore")
+    except OSError:
+        return 0, 0
+    for line in reversed(chunk.splitlines()):
+        if '"token_count"' not in line or '"info":null' in line:
+            continue
+        try:
+            info = (json.loads(line).get("payload") or {}).get("info") or {}
+        except ValueError:
+            continue
+        last = info.get("last_token_usage") or {}
+        total = info.get("total_token_usage") or {}
+        ctx = int(last.get("input_tokens") or 0) + int(last.get("output_tokens") or 0)
+        if ctx:
+            return ctx, int(total.get("input_tokens") or 0)
+    return 0, 0
+
+
+def find_codex_transcript(session_id):
+    """훅 입력에 transcript_path가 없을 때 세션 id로 rollout 파일을 찾는다."""
+    if not session_id:
+        return ""
+    import glob
+    matches = glob.glob(os.path.join(CODEX_SESSIONS_DIR, "*", "*", "*",
+                                     "rollout-*%s*.jsonl" % session_id))
+    return max(matches, key=os.path.getmtime) if matches else ""
+
+
 def context_advice(tokens):
     if tokens >= RESTART_TOKENS:
         return ("[CONTEXT WATCH] 직전 요청 문맥 %dk 토큰. 매 요청이 이 크기로 과금된다. "

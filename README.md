@@ -124,6 +124,8 @@ context/local/
 Claude의 실제 Fable 기본 effort도 `medium`으로 동기화합니다.
 
 - `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
+- `session_handoff.py`: 세션 인계. Stop에서 문맥 50만 토큰 이상이면 한 번 차단해 인계 노트(`write`)를 쓰게 하고, 같은 경로의 다음 Claude·Codex 세션 SessionStart에 주입(72시간, 세션당 1회). `/handoff`로 수동 저장, `done`으로 폐기. Codex는 rollout의 token_count로 판단(직전 턴 18만 토큰↑ 또는 누적 입력 4천만↑)
+- `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
 - `session_handoff.py`: 세션 인계. Stop에서 문맥 50만 토큰 이상이면 한 번 차단해 인계 노트(`write`)를 쓰게 하고, 같은 경로의 다음 Claude·Codex 세션 SessionStart에 주입(72시간, 세션당 1회). `/handoff`로 수동 저장, `done`으로 폐기
 - `context_watch.py`(Claude 전용): 직전 요청 문맥이 25만/50만 토큰을 넘으면 `/compact`·새 세션 권고, 6천 자 이상 도구 출력에 자르기 안내
 `직접 해줘`, `Claude가 직접 해줘`, `Codex 쓰지 마`, `위임하지 마`라고 하면 Claude가 직접
