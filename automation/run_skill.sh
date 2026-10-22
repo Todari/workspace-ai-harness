@@ -4,6 +4,9 @@ set -eu
 export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 # cron passes LOGNAME but not USER; the Claude CLI keychain lookup needs USER or it reports "Not logged in".
 export USER="${USER:-${LOGNAME:-$(id -un)}}"
+# 크론은 로그인 키체인을 쓰지 못해 CLI가 "Not logged in"으로 실패한다. `claude setup-token`으로 만든
+# 토큰을 ~/.claude/automation.env(권한 600, 레포 밖)에 CLAUDE_CODE_OAUTH_TOKEN=... 한 줄로 두면 읽는다.
+[[ -r "$HOME/.claude/automation.env" ]] && { set -a; source "$HOME/.claude/automation.env"; set +a; }
 HARNESS_DIR=${0:A:h:h}
 VAULT="${OBSIDIAN_VAULT_PATH:-$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/docs}"
 WORKSPACE="${WORKSPACE_HARNESS_ROOT:-$HOME/workspace}"
