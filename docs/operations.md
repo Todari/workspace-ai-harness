@@ -5,6 +5,21 @@ Slack/Discord 메시지를 전송하지 않았다. 기술 문서의 정본은 �
 
 ## 현재 구조와 판단
 
+### 2026-10-22: Codex 위임 체계 제거
+
+사용자가 주로 Claude만 쓰고, worker 실행이 최근 30일 2회(7일 0회)로 줄어 위임 체계를 걷어냈다.
+9/8 감사 때 7일 64회였던 것과 대비된다. 반면 비용은 그대로였다: 세션마다 advisory 안내 주입
+(14일 336회), 테스트 포함 약 2,350줄, CLI 버전이 오를 때마다 재검증 경고.
+
+- 삭제: `codex_worker.py`·`execution_policy.py`·`claude_auto_route.py`·`claude_handoff_gate.py`와 테스트,
+  `orchestration/models.json`·결과 스키마, `fable-architect`·`/delegate-codex`·`/bounded-ultracode`,
+  `docs/codex-orchestration.md`, `stats.py`·`ops_report.py`의 worker·위임 턴 집계.
+- `claude_auto_route.py`·`claude_handoff_gate.py`는 `RETIRED_SCRIPTS`에 넣어 재등록 때 설정에서 지워지게 했다.
+- `register_orchestration.py`는 `/handoff` 자산 동기화만 남겼다. Claude effort 동기화는 뺐고 현재
+  `~/.claude/settings.json` 값은 그대로 둔다. doctor의 CLI 버전 기준 경고도 `models.json`과 함께 없어졌다.
+- 유지: Codex를 메인 세션으로 쓸 때의 훅 등록(`register_codex.py`)·전역 AGENTS.md 동기화·세션 인계.
+- 되살릴 때는 이 커밋의 부모에서 파일을 복원한다. 기존 실행 기록 `<cache>/codex-worker`는 지우지 않았다.
+
 ### 2026-09-21: 검색 실패와 압축 전 인계 점검
 
 - 볼트 검색이 파일 읽기 오류를 빈 문자열로 처리하고 폴더 순회 오류를 무시해
@@ -88,9 +103,7 @@ flowchart LR
 ```
 
 전면 재작성보다, 이미 있는 저장소·훅·봇을 유지하며 유실과 측정 오류를 먼저 고친다.
-Claude 기본 medium과 Codex worker 설정은 유지한다. 현재 `routing.enforcement`는 advisory다.
-강제 위임은 어제 오분류·죽은 턴 때문에 완화됐으므로 측정 없이 다시 강제하지 않는다.
-일반 코딩에는 주 에이전트를 유지하고, 독립 조사·검증이 실제로 병렬화될 때만 위임한다.
+(2026-10-22 갱신) Codex worker 위임은 사용이 줄어 제거했다. 위 2026-10-22 항목 참고.
 
 ## 실측과 수정
 
@@ -127,8 +140,8 @@ python3 ops_report.py report --days 7 --output /path/to/report.md
 python3 ops_report.py run --job weekly-review --timeout 3600 -- /bin/zsh automation/run_skill.sh weekly-review
 ```
 
-일상 리포트는 LLM·대화 원문·볼트 본문 없이 수집한다. verification은 상태 파일 TTL 창,
-worker는 보존된 실행 기록 범위라는 한계가 있다. 새 실행 기록이 없으면 `unknown`이며,
+일상 리포트는 LLM·대화 원문·볼트 본문 없이 수집한다. verification은 상태 파일 TTL 창이라는
+한계가 있다. 새 실행 기록이 없으면 `unknown`이며,
 등록 사실이나 오래된 텍스트 로그를 성공으로 변환하지 않는다. 현재 보고는 최대 지연 기준으로
 `stale`을 표시하므로 실패 즉시 외부 알림은 별도 전송 스케줄이 필요하다.
 

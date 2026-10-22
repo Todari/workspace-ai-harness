@@ -16,18 +16,6 @@ HARNESS = os.path.dirname(os.path.abspath(__file__))
 # Codex(0.151 문서 기준)는 셸 도구를 hook 입력에서 "Bash"로, 파일 편집을 "apply_patch"로 보고한다.
 # matcher가 없으면 이벤트 전체에 걸린다.
 HOOKS = (
-    {"event": "SessionStart", "script": "claude_auto_route.py", "timeout": 5,
-     "clients": ("claude",)},
-    {"event": "UserPromptSubmit", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",), "requires": "hard_routing"},
-    {"event": "PreToolUse", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",), "requires": "hard_routing"},
-    {"event": "PostToolUse", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",), "requires": "hard_routing"},
-    {"event": "PostToolUseFailure", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",), "requires": "hard_routing"},
-    {"event": "Stop", "script": "claude_handoff_gate.py", "timeout": 5,
-     "clients": ("claude",), "requires": "hard_routing"},
     {"event": "UserPromptSubmit", "script": "context_watch.py", "timeout": 5,
      "clients": ("claude",)},
     {"event": "PostToolUse", "script": "context_watch.py", "timeout": 5,
@@ -47,34 +35,16 @@ HOOKS = (
 # 과거에 등록됐던 스크립트도 소유 목록에 남겨야 재등록 때 낡은 항목이 정리된다.
 RETIRED_SCRIPTS = (
     "plan_gate.py", "bash_gate.py", "plan_marker.py", "quick_bypass.py",
-    "obsidian_scheduler.py",
+    "obsidian_scheduler.py", "claude_auto_route.py", "claude_handoff_gate.py",
 )
 OWNED_SCRIPTS = tuple(sorted({h["script"] for h in HOOKS} | set(RETIRED_SCRIPTS)))
-
-
-def routing_is_hard():
-    """orchestration/models.json routing.enforcement == "hard"일 때만 라우팅 게이트를 등록한다."""
-    try:
-        import codex_worker
-        return codex_worker.load_config()["routing"].get("enforcement", "hard") == "hard"
-    except Exception:
-        return False
-
-
-def _requirement_met(spec):
-    requires = spec.get("requires")
-    if not requires:
-        return True
-    if requires == "hard_routing":
-        return routing_is_hard()
-    return False
 
 
 def hooks_for(client):
     if client not in ("claude", "codex"):
         raise ValueError("unknown hook client: %s" % client)
     return tuple(spec for spec in HOOKS
-                 if client in spec.get("clients", ("claude", "codex")) and _requirement_met(spec))
+                 if client in spec.get("clients", ("claude", "codex")))
 
 
 def claude_hooks():

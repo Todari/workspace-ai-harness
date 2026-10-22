@@ -45,7 +45,7 @@ class OperationsTest(unittest.TestCase):
         report = {'generated_at': 'now', 'jobs': [
             {'job': 'vault-push', 'status': 'failed', 'exit_code': 7,
              'last_attempt': 100, 'last_success': 50}],
-            'metrics': {'days': 1, 'codex_workers': {'runs': 0, 'statuses': {}, 'usage': {}}}}
+            'metrics': {'days': 1}}
         text = ops.markdown(report)
         self.assertIn('vault-push | failed | 7 |', text)
         self.assertIn('최근 실행(UTC)', text)
@@ -100,7 +100,7 @@ class OperationsTest(unittest.TestCase):
         self.assertNotIn(b'SECRET', self.db.read_bytes())
 
     def test_preview_never_sends(self):
-        report = {'generated_at': 'now', 'jobs': [], 'metrics': {'days': 1, 'codex_workers': {'runs': 0, 'statuses': {}, 'usage': {}}}}
+        report = {'generated_at': 'now', 'jobs': [], 'metrics': {'days': 1}}
         with mock.patch.object(ops, 'build_report', return_value=report), mock.patch.object(ops, 'deliver') as send:
             with mock.patch('sys.stdout'):
                 self.assertEqual(ops.main(['report']), 0)

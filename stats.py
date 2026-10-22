@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """하네스 이벤트 통계. 사용: python3 stats.py [일수=7] [--json] [--include-claude]
 
-기본은 이벤트·상태·Codex worker 요약만 읽는다. 큰 Claude 원문 사용량 집계는
+기본은 이벤트·상태 요약만 읽는다. 큰 Claude 원문 사용량 집계는
 --include-claude를 명시했을 때만 실행한다. --json은 정기 운영 보고용이다.
 
 읽는 법:
@@ -20,8 +20,6 @@ from collections import Counter
 import harness_lib as lib
 
 VERIFY_DIR = os.path.join(lib.CACHE_DIR, "verify-gate")
-HANDOFF_DIR = os.path.join(lib.CACHE_DIR, "claude-handoff")
-CODEX_RUNS_DIR = lib.CODEX_RUNS_DIR
 CLAUDE_PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
 CODEX_SESSIONS_DIR = os.path.expanduser("~/.codex/sessions")
 CONTEXT_WARN_TOKENS = 250_000
@@ -134,75 +132,6 @@ def verify_compliance(state_dir=VERIFY_DIR):
     return prompted, verified
 
 
-def handoff_summary(state_dir=HANDOFF_DIR, since_ts=0):
-    """hard handoff 턴의 이행 지표: 위임 턴 수, run ID 회수율, 위반·background·wait 횟수.
-
-    문서의 성공 기준(위임 턴당 폴링 0회, run 결과 회수)을 상태 파일에서 직접 센다.
-    """
-    summary = {
-        "delegated": 0, "with_run": 0, "result_ready": 0, "violations": 0,
-        "background_attempts": 0, "wait_calls": 0, "planner_tool_calls": 0,
-        "routes": Counter(),
-    }
-    for path in glob.glob(os.path.join(state_dir, "*.json")):
-        try:
-            if os.path.getmtime(path) < since_ts:
-                continue
-            with open(path, encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, ValueError):
-            continue
-        route = state.get("route", "direct")
-        summary["routes"][route] += 1
-        if route == "direct":
-            continue
-        summary["delegated"] += 1
-        if state.get("run_ids"):
-            summary["with_run"] += 1
-        if state.get("phase") == "result_ready":
-            summary["result_ready"] += 1
-        for key in ("violations", "background_attempts", "wait_calls", "planner_tool_calls"):
-            value = state.get(key, 0)
-            if isinstance(value, int):
-                summary[key] += value
-    return summary
-
-
-def codex_worker_summary(run_dir=CODEX_RUNS_DIR, since_ts=0):
-    """Codex worker 기록에서 모델·상태·토큰·시간을 집계한다."""
-    summary = {
-        "runs": 0,
-        "statuses": Counter(),
-        "routes": Counter(),
-        "usage": Counter(),
-        "duration_seconds": 0.0,
-    }
-    for path in glob.glob(os.path.join(run_dir, "*.json")):
-        try:
-            with open(path, encoding="utf-8") as f:
-                record = json.load(f)
-            created = record.get("created_at", "")
-            ts = datetime.datetime.fromisoformat(created).timestamp() if created else 0
-        except (OSError, ValueError, TypeError):
-            continue
-        if ts < since_ts:
-            continue
-        summary["runs"] += 1
-        invocation = record.get("invocation_status", "unknown")
-        status = (record.get("worker_status", "unknown")
-                  if invocation == "completed" else invocation)
-        summary["statuses"][status] += 1
-        route = "%s/%s" % (record.get("model", "unknown"), record.get("effort", "unknown"))
-        summary["routes"][route] += 1
-        for key, value in record.get("usage", {}).items():
-            if isinstance(value, int):
-                summary["usage"][key] += value
-        duration = record.get("duration_seconds", 0)
-        if isinstance(duration, (int, float)):
-            summary["duration_seconds"] += duration
-    return summary
-
-
 def claude_usage_summary(projects_dir=CLAUDE_PROJECTS_DIR, since_ts=0):
     """최근 파일의 실제 요청만 집계하며 파일간 복제·스트리밍은 최신 요청 ID로 합친다."""
     messages = {}
@@ -305,8 +234,6 @@ def collect_report(days=7, include_claude=False):
             "verified": verified,
             "state_ttl_days": lib.STATE_TTL_SECONDS / 86400,
         },
-        "handoff": handoff_summary(since_ts=since_ts),
-        "codex_workers": codex_worker_summary(since_ts=since_ts),
         "claude_included": bool(include_claude),
         "claude": claude_usage_summary(since_ts=since_ts) if include_claude else None,
         "codex_sessions": codex_session_summary(since_ts=since_ts) if include_claude else None,
@@ -344,32 +271,6 @@ def main(argv=None):
     if prompted:
         print("  검증 게이트 이행: 차단 %d세션 중 %d세션이 검증 실행 (%d%%)" % (
             prompted, verified, 100 * verified // prompted))
-    handoff = report["handoff"]
-    if handoff["routes"]:
-        print("  라우트 분포: %s" % ", ".join("%s %d" % item
-                                            for item in handoff["routes"].most_common()))
-    if handoff["delegated"]:
-        n = handoff["delegated"]
-        print("  위임 턴 %d: run ID 회수 %d (%d%%), 결과 수신 %d, 위반 %.1f/턴, "
-              "background 시도 %d, wait %.1f/턴, git 준비 호출 %.1f/턴" % (
-                  n, handoff["with_run"], 100 * handoff["with_run"] // n,
-                  handoff["result_ready"], handoff["violations"] / n,
-                  handoff["background_attempts"], handoff["wait_calls"] / n,
-                  handoff["planner_tool_calls"] / n))
-    workers = report["codex_workers"]
-    if workers["runs"]:
-        print("  Codex worker: %d회 / 상태 %s" % (
-            workers["runs"], ", ".join("%s %d" % item
-                                       for item in workers["statuses"].most_common())))
-        print("    라우트: %s" % ", ".join("%s %d" % item
-                                           for item in workers["routes"].most_common()))
-        usage = workers["usage"]
-        input_tokens = usage.get("input_tokens", 0)
-        cached_tokens = usage.get("cached_input_tokens", 0)
-        print("    토큰: input %d (cached %d, uncached %d), output %d (reasoning %d)" % (
-            input_tokens, cached_tokens, max(0, input_tokens - cached_tokens),
-            usage.get("output_tokens", 0), usage.get("reasoning_output_tokens", 0)))
-        print("    평균 시간: %.1f초" % (workers["duration_seconds"] / workers["runs"]))
     claude = report["claude"]
     if claude is None:
         print("  Claude 원문 사용량은 생략 (--include-claude로 포함)")

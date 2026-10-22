@@ -222,15 +222,8 @@ def build_report(days=1, db=DB):
 
 def markdown(report):
     m = report['metrics']
-    w = m['codex_workers']
-    usage = w['usage']
     lines = ['# 워크스페이스 운영 리포트', '', report['generated_at'], '',
              '- 집계 기간: 최근 %g일' % m['days'],
-             '- Codex worker: %d회 (%s)' % (w['runs'], ', '.join(
-                 '%s %s' % item for item in sorted(w['statuses'].items())) or '기록 없음'),
-             '- Worker input: %s / cached: %s / output: %s' % (
-                 usage.get('input_tokens', 0), usage.get('cached_input_tokens', 0),
-                 usage.get('output_tokens', 0)),
              '- Claude 전체 사용량: 생략 (`stats.py --include-claude`로 별도 조회)',
              '', '| 자동화 | 상태 | 종료 코드 | 최근 실행(UTC) | 마지막 성공(UTC) |',
              '|---|---|---|---|---|']
@@ -249,7 +242,6 @@ def markdown(report):
                       '`vault_sync.py --dry-run`으로 요약 수집을 점검하세요. '
                       '볼트 기록 성공과 원격·Discord 반영 성공은 별개입니다.'])
     lines.extend(['', 'unknown은 실행 기록 미수집, stale은 마지막 성공 기한 초과입니다.',
-                  '기록된 worker 사용량만 포함합니다. 직접 실행한 Codex 세션과 비용 추정은 포함하지 않습니다.',
                   '작업 원문·볼트 본문·인증값은 이 리포트에 포함하지 않습니다.'])
     return '\n'.join(lines) + '\n'
 

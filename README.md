@@ -20,39 +20,13 @@ Claude Code와 Codex가 같은 작업 공간에서 공통 프로젝트 컨텍스
 - `ops_report.py`로 자동화의 실제 종료 코드·마지막 성공·미실행을 관측하고, LLM 없이 로컬 리포트를 만든다.
   Slack·Discord는 명시적인 `--send`에서만 전송하며 일일 중복 전송과 불확실한 응답 재전송을 막는다.
 - Discord 캡처 페이지네이션·처리 원장·부분 ack 실패 보고, 레지스트리 기반 볼트 동기화와 전송 전 Git 최신성 검사.
-- 규칙 기반 라우터가 LLM 호출 없이 요청을 분류한다. 현재 개인 설정은 advisory로, 차단 없이 위임을 권고한다.
-  hard 모드는 선택할 수 있지만 오분류·재시도 비용을 먼저 측정해야 한다.
-  전용 `codex exec` 세션이 조사·구현·검증하고 실행별 모델·effort·thread·Git·토큰을 기록한다.
 
 ## 요구 사항
-
-### 작업별 실행 비용 조절
-
-`orchestration/models.json`의 `execution_profiles`가 Codex worker의 선택 기준이다.
-manifest의 effort를 생략하거나 `worker_effort: "auto"`로 두면 다음을 적용한다.
-
-| 작업 | 모델 | effort |
-|---|---|---|
-| simple: 명확하고 좁은 작업 | gpt-5.6-luna | low |
-| medium: 일반 구현·조사 | gpt-5.6-sol | medium |
-| complex / high_risk / batch_or_repo_wide | gpt-5.6-sol | high |
-| 반복 추론 실패 후 명시적 승격 | gpt-5.6-sol | 최대 xhigh |
-
-인증·결제·마이그레이션·장애 등은 simple로 분류돼도 high를 기본으로 선택한다.
-`--model`, `--effort` 또는 manifest의 `worker_model`, `auto` 이외의 명시적 effort 값은 자동 선택보다 우선한다.
-후속 `resume`·`rerun`은 기존 선택을 유지한다. 반복된 추론·검증 가설 실패를 확인한 에이전트는
-`resume RUN_ID --instruction "실패한 가설과 확인된 근거를 이어서 해결" --escalate`를 사용한다.
-네트워크·권한·사용량 제한·자료 부족으로 승격하거나 자동 유료 재시도를 돌리지 않는다.
-명시적으로 고정한 모델·effort는 승격 플래그로도 덮어쓰지 않는다.
-
-분류에는 추가 LLM 호출이 없다. run 기록의 실제 모델·effort·usage와 parent_run_id를 통해
-재시도를 합한 사용량·완료율을 비교한다. 절감률이나 모델의 계정별 사용 가능 여부는 추정하지 않는다.
-이 정책은 하네스가 시작한 worker에 적용되며, 이미 열린 Codex/Claude 메인 대화의 모델을 변경하지 않는다.
 
 ### 실행 환경
 
 - Python 3.8 이상
-- Claude Code 2.1.251 이상(modelSettings·현재 훅 응답 형식) 또는 Codex 0.151 이상
+- Claude Code 2.1.251 이상(현재 훅 응답 형식) 또는 Codex 0.151 이상
 - Git
 - 선택 사항: Obsidian 볼트와 iCloud Drive 전체 디스크 접근 권한
 
@@ -99,7 +73,6 @@ Codex는 등록된 훅 명령의 변경을 감지하면 다시 신뢰 승인을 
 | `WORKSPACE_HARNESS_CONTEXT_FILE` | `context/local/workspace.md` 또는 예시 | 공통 지침 원본 |
 | `WORKSPACE_HARNESS_REPOS` | `context/local/repos.json` | 레포 레지스트리 |
 | `WORKSPACE_HARNESS_CACHE_DIR` | `~/.claude/cache` | repo map·이벤트·검증 상태 캐시 |
-| `WORKSPACE_HARNESS_CODEX_RUNS_DIR` | `<cache>/codex-worker` | Codex worker 실행 이력(최근 200건) |
 | `OBSIDIAN_VAULT_PATH` | macOS Obsidian iCloud 기본 경로 | 선택적 볼트 루트 |
 | `CODEX_HOME` | `~/.codex` | Codex 설정·전역 AGENTS.md 위치 |
 
@@ -117,8 +90,6 @@ context/local/
 
 - `harness_lib.py`: 경로 설정, 로그·이벤트와 fail-open 공용 기능
 - `hooks_manifest.py`: 등록할 훅의 단일 목록
-- `claude_auto_route.py`: Claude에만 자동 구현 라우팅 정책 주입(Codex 재위임 방지)
-- `claude_handoff_gate.py`: 요청 분류와 위임 전후 도구·턴 상한을 강제하는 상태 머신. `models.json` routing.enforcement가 `hard`일 때만 등록되며 advisory에서는 훅이 빠진다
 - `repo_map.py`: 저장소 구조·스크립트·Git 상태 요약 (lean 모드·그룹 인덱스 포함)
 - `repos.py`: 레포 레지스트리 조회·활동 추적·규칙 표 생성
 - `sync_context.py`: 공통 규칙을 지침 문서 세 곳에 동기화
@@ -127,11 +98,9 @@ context/local/
 - `session_handoff.py`: 세션 인계. Stop에서 문맥 50만 토큰 이상이면 한 번 차단해 인계 노트(`write`)를 쓰게 하고, 같은 경로의 다음 Claude·Codex 세션 SessionStart에 주입(72시간, 세션당 1회). `/handoff`로 수동 저장, `done`으로 폐기. Codex는 rollout의 token_count로 판단(직전 턴 18만 토큰↑ 또는 누적 입력 4천만↑)
 - `handoff_extract.py`: PreCompact(Claude·Codex)에서 트랜스크립트로 자동 인계 노트(요청·편집 파일·검증 명령·git 상태)를 기계적으로 생성. 같은 세션의 수동 노트가 있으면 덮지 않음
 - `register_hooks.py` / `register_codex.py`: Claude Code / Codex 훅 등록
-- `register_orchestration.py`: Claude의 Fable architect와 강제 위임용 `/delegate-codex` 명령 동기화
-- `codex_worker.py`: 구조화된 Codex 구현 실행·resume·rerun·토큰 이력
-- `orchestration/models.json`: 활성 모델·effort와 업그레이드 이력의 정본
+- `register_orchestration.py`: Claude 명령 자산(`/handoff`)을 workspace `.claude/`에 동기화
 - `doctor.py`: 등록·동기화·리비전·레지스트리 드리프트 점검
-- `stats.py`: Claude·Codex 토큰, 라우팅 이벤트와 검증 이행률
+- `stats.py`: 훅 이벤트, 검증 이행률, 선택적 Claude·Codex 세션 토큰
 - `vault_search.py` / `obsidian_bridge.py` / `vault_subagent.py`: Obsidian 연동
 
 ## 보안 경계
@@ -142,39 +111,6 @@ context/local/
 - 설치 스크립트를 실행하기 전에 변경되는 Claude Code·Codex 설정을 직접 검토하세요.
 
 보안 문제는 공개 이슈 대신 [보안 정책](SECURITY.md)에 따라 제보해 주세요.
-
-## Fable → Codex 개발 위임
-
-새 Claude Code 세션에서는 평소처럼 자연어로 요청하면 됩니다. 대화·제품 판단은 Claude가 직접,
-레포 조사·진단은 Codex `inspect`, 구현은 Codex worker가 담당합니다. 불명확한 고위험 설계만
-`fable-architect`를 한 번 사용합니다. 기본은 Fable `medium` → Codex `high`이며, 실제로 어려운
-구현에만 Codex `xhigh`를 사용합니다. `register_orchestration.py`는 선언만 바꾸는 것이 아니라
-Claude의 실제 Fable 기본 effort도 `medium`으로 동기화합니다.
-
-`직접 해줘`, `Claude가 직접 해줘`, `Codex 쓰지 마`, `위임하지 마`라고 하면 Claude가 직접
-처리합니다. 반대로 `/delegate-codex <작업>`은 자동 분류와 무관하게 Codex 위임을 강제합니다.
-자동 정책은 Claude 훅에만 등록되므로 Codex worker가 다시 자신을 호출하지 않습니다.
-아래 강제 차단 동작은 `routing.enforcement=hard`를 선택한 경우에만 적용됩니다.
-현재 `advisory`에서는 직접 수행이 허용되며, 강제 차단하지 않습니다.
-하드 모드로 위임된 턴에서는 Claude의 레포 탐색·편집·background 실행(`&`와 `run_in_background` 파라미터 모두)·
-로그 redirect·주기적 폴링이 차단됩니다. worker는 `run --detach`로 세션과 분리해 띄우고 run_id를
-즉시 받은 뒤, `wait <run_id>`를 foreground에서 호출해 기다립니다. Codex run은 중앙값 10분,
-p90 30분 가까이 걸려 Claude Bash 도구의 600초 상한을 넘기 때문에 blocking 1회 호출로는 결과가
-유실됐고, 이 구조가 그 문제를 없앱니다. `wait`가 `running`을 돌려주면 같은 명령을 다시 호출하며
-(최대 8회), 최종 JSON이 오면 추가 도구 없이 요약합니다. 여러 레포 요청은 최대 4개 worker를 한
-번의 병렬 도구 배치로 시작하고 `wait`에 run ID를 모두 넘깁니다. 전체 Codex worker 동시 실행 수는
-4개, 같은 repo의 writer는 1개로 제한되며 잠금은 즉시 실패하지 않고 대기열 상한까지 기다립니다.
-
-```bash
-python3 codex_worker.py run --repo <git-root> --manifest - --detach <<'JSON' ... JSON
-python3 codex_worker.py wait <run-id> --timeout 540   # running이면 다시 호출
-python3 codex_worker.py list --limit 10       # 최근 run·모델·토큰
-python3 codex_worker.py resume <run-id> --instruction "후속 수정"
-python3 codex_worker.py rerun <run-id> --model <candidate> --effort high
-```
-
-동일 worktree에는 worker 하나만 실행합니다. 상세 운영·재현·모델 승격 절차는
-[`docs/codex-orchestration.md`](docs/codex-orchestration.md)를 참고하세요.
 
 ## 운영과 실측 개선
 

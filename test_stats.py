@@ -69,40 +69,6 @@ class ComplianceTest(unittest.TestCase):
             self.assertEqual(stats.verify_compliance(d), (1, 0))
 
 
-class CodexWorkerSummaryTest(unittest.TestCase):
-    def test_aggregates_routes_statuses_usage_and_duration(self):
-        with tempfile.TemporaryDirectory() as d:
-            records = (
-                {
-                    "created_at": "2026-09-03T10:00:00+09:00",
-                    "invocation_status": "completed",
-                    "worker_status": "completed",
-                    "model": "gpt-5.6-sol",
-                    "effort": "high",
-                    "duration_seconds": 10,
-                    "usage": {"input_tokens": 100, "cached_input_tokens": 80,
-                              "output_tokens": 20, "reasoning_output_tokens": 5},
-                },
-                {
-                    "created_at": "2026-09-03T10:10:00+09:00",
-                    "invocation_status": "failed",
-                    "worker_status": "unknown",
-                    "model": "gpt-5.6-sol",
-                    "effort": "xhigh",
-                    "duration_seconds": 30,
-                    "usage": {"input_tokens": 50, "output_tokens": 10},
-                },
-            )
-            for index, record in enumerate(records):
-                with open(os.path.join(d, "%d.json" % index), "w") as f:
-                    json.dump(record, f)
-            summary = stats.codex_worker_summary(d, since_ts=0)
-            self.assertEqual(summary["runs"], 2)
-            self.assertEqual(summary["statuses"]["completed"], 1)
-            self.assertEqual(summary["statuses"]["failed"], 1)
-            self.assertEqual(summary["usage"]["input_tokens"], 150)
-            self.assertEqual(summary["duration_seconds"], 40)
-
 
 class ClaudeUsageSummaryTest(unittest.TestCase):
     @staticmethod
@@ -229,8 +195,6 @@ class CollectReportTest(unittest.TestCase):
         directory = self.stack.enter_context(tempfile.TemporaryDirectory())
         self.stack.enter_context(patch.object(stats.lib, "EVENTS_PATH", os.path.join(directory, "missing.jsonl")))
         self.stack.enter_context(patch("stats.verify_compliance", return_value=(2, 1)))
-        self.stack.enter_context(patch("stats.handoff_summary", return_value={"routes": {}}))
-        self.stack.enter_context(patch("stats.codex_worker_summary", return_value={"runs": 0, "usage": stats.Counter(input_tokens=100)}))
         self.claude = self.stack.enter_context(patch("stats.claude_usage_summary", return_value={"requests": 1}))
 
     def test_default_report_never_reads_claude_transcripts_and_is_json_serializable(self):
@@ -238,7 +202,7 @@ class CollectReportTest(unittest.TestCase):
         self.claude.assert_not_called()
         self.assertIsNone(report["claude"])
         self.assertFalse(report["claude_included"])
-        self.assertEqual(json.loads(json.dumps(report))["codex_workers"]["usage"]["input_tokens"], 100)
+        json.dumps(report)
         self.assertEqual(report["verification"]["verified"], 1)
 
     def test_explicit_claude_report_shares_the_reporting_cutoff(self):

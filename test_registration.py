@@ -4,9 +4,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-import claude_auto_route
-import claude_handoff_gate
-import codex_worker
 import hooks_manifest as manifest
 import register_codex
 import register_hooks
@@ -38,16 +35,12 @@ class ManifestTest(unittest.TestCase):
         self.assertTrue(manifest.is_owned_command("python3 /x/repo_map.py --harness-rev=abc"))
         self.assertFalse(manifest.is_owned_command("python3 /x/other_hook.py"))
 
-    def test_auto_router_is_claude_only(self):
-        claude_scripts = {spec["script"] for spec in manifest.claude_hooks()}
-        codex_scripts = {spec["script"] for spec in manifest.codex_hooks()}
-        self.assertIn("claude_auto_route.py", claude_scripts)
-        self.assertNotIn("claude_auto_route.py", codex_scripts)
-        self.assertNotIn("claude_handoff_gate.py", codex_scripts)
-        with mock.patch.object(manifest, "routing_is_hard", return_value=True):
-            self.assertIn("claude_handoff_gate.py", {s["script"] for s in manifest.claude_hooks()})
-        with mock.patch.object(manifest, "routing_is_hard", return_value=False):
-            self.assertNotIn("claude_handoff_gate.py", {s["script"] for s in manifest.claude_hooks()})
+    def test_retired_delegation_hooks_are_cleaned_up_not_installed(self):
+        installed = ({s["script"] for s in manifest.claude_hooks()}
+                     | {s["script"] for s in manifest.codex_hooks()})
+        for script in ("claude_auto_route.py", "claude_handoff_gate.py"):
+            self.assertNotIn(script, installed)
+            self.assertTrue(manifest.is_owned_command("python3 /x/%s" % script))
 
 
 class CodexRegistrationTest(unittest.TestCase):
@@ -155,46 +148,7 @@ class ClaudeRegistrationTest(unittest.TestCase):
                          {"frontend-design@claude-plugins-official": True})
 
 
-class AutoRouteContextTest(unittest.TestCase):
-    def test_hard_context_uses_tracked_model_and_requires_no_command(self):
-        import json as _json
-        config = _json.loads(_json.dumps(codex_worker.load_config()))
-        config["routing"]["enforcement"] = "hard"
-        context = claude_auto_route.routing_context(config)
-        self.assertIn("hard Codex handoff v2", context)
-        self.assertIn("gpt-5.6-sol", context)
-        self.assertIn("직접 해줘", context)
-        self.assertIn("Never delegate again", context)
-
-    def test_advisory_context_is_short_and_non_blocking(self):
-        import json as _json
-        config = _json.loads(_json.dumps(codex_worker.load_config()))
-        config["routing"]["enforcement"] = "advisory"
-        context = claude_auto_route.routing_context(config)
-        self.assertIn("advisory", context)
-        self.assertIn("--detach", context)
-        self.assertNotIn("Do not poll", context)
-        self.assertLess(len(context), 900)
-
-
 class OrchestrationRegistrationTest(unittest.TestCase):
-    def test_updates_actual_fable_effort_without_touching_other_models(self):
-        settings = {
-            "model": "claude-fable-5-1[1m]",
-            "effortLevel": "xhigh",
-            "modelSettings": {"claude-sonnet-5": {"effortLevel": "high"}},
-        }
-        changed = register_orchestration.update_planner_effort(
-            settings, codex_worker.load_config())
-        self.assertTrue(changed)
-        self.assertEqual(settings["effortLevel"], "medium")
-        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"],
-                         "medium")
-        self.assertEqual(settings["modelSettings"]["claude-fable-5-1[1m]"]["effortLevel"],
-                         "medium")
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5"]["effortLevel"],
-                         "high")
-
     def test_syncs_managed_assets_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as source, tempfile.TemporaryDirectory() as target:
             source_path = os.path.join(source, "asset.md")

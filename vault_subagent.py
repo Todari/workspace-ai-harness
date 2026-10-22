@@ -14,7 +14,7 @@ SEARCH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vault_search.
 # 볼트를 실제로 검색할 만한 탐색·판단형 에이전트에만 붙인다. 워크플로 워커와 이름 붙인 일회성
 # 에이전트는 좁은 과제를 받으므로 붙여 봐야 토큰만 쓴다. agent_type이 없으면(Codex 등) 붙인다.
 VAULT_AGENT_TYPES = frozenset({
-    "Explore", "general-purpose", "cheap-explorer", "claude", "Plan", "fable-architect",
+    "Explore", "general-purpose", "cheap-explorer", "claude", "Plan",
 })
 
 TEXT = (
