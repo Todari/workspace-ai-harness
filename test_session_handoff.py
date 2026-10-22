@@ -100,8 +100,9 @@ class Handoff(unittest.TestCase):
             d = os.path.join(self.tmp, "2026", "09", "17")
             os.makedirs(d)
             path = os.path.join(d, "rollout-2026-09-17T00-00-00-thread-xyz.jsonl")
-            open(path, "w").write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
-                "total_token_usage": {"input_tokens": 1}, "last_token_usage": {"input_tokens": 190_000}}}}) + "\n")
+            with open(path, "w") as f:
+                f.write(json.dumps({"type": "event_msg", "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {"input_tokens": 1}, "last_token_usage": {"input_tokens": 190_000}}}}) + "\n")
             data = {"hook_event_name": "Stop", "cwd": CWD, "thread_id": "thread-xyz"}
             self.assertEqual(sh.handle(data)["decision"], "block")
 

@@ -25,7 +25,8 @@ MAX_LOG_BYTES = 512 * 1024
 LOG_KEEP_LINES = 200
 EVENTS_PATH = os.path.join(CACHE_DIR, "harness-events.jsonl")
 MAX_EVENTS_BYTES = 2 * 1024 * 1024
-EVENTS_KEEP_LINES = 2000
+# 하루 약 360건이 쌓인다. 2000줄이면 회전 뒤 stats.py 7·14일 창이 비므로 4주치를 남긴다.
+EVENTS_KEEP_LINES = 10_000
 
 
 def log(msg):

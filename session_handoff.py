@@ -68,6 +68,7 @@ def write(cwd, body, session_id="", client="claude", auto=False):
     if not body:
         raise ValueError("인계 내용이 비어 있다")
     os.makedirs(HANDOFF_DIR, exist_ok=True)
+    lib.prune_old_files(HANDOFF_DIR, HANDOFF_TTL_SECONDS)  # 만료 노트·메타·stop 표식 정리
     md_path, _ = _paths(cwd)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write(body + "\n")

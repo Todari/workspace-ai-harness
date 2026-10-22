@@ -19,7 +19,7 @@ HOOKS = (
     {"event": "UserPromptSubmit", "script": "context_watch.py", "timeout": 5,
      "clients": ("claude",)},
     {"event": "PostToolUse", "script": "context_watch.py", "timeout": 5,
-     "clients": ("claude",), "claude_matcher": "Bash|Read|Grep|Glob|WebFetch"},
+     "clients": ("claude",), "claude_matcher": "Bash|Grep|Glob|WebFetch"},
     {"event": "SessionStart", "script": "session_handoff.py", "timeout": 5},
     {"event": "Stop", "script": "session_handoff.py", "timeout": 5},
     {"event": "PreCompact", "script": "session_handoff.py", "timeout": 10},

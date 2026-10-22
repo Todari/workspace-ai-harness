@@ -190,6 +190,31 @@ def check_logs(r):
         r.ok("최근 7일 fail-open 없음")
 
 
+def check_repo(r):
+    """하네스 자체의 미커밋·미푸시 변경. 2026-09-17~10-22에 푸시가 5주 밀린 것을 아무도 보지 못했다."""
+    print("[harness repo] %s" % manifest.HARNESS)
+
+    def git(*args):
+        proc = subprocess.run(["git", "-C", manifest.HARNESS, *args],
+                              capture_output=True, text=True, timeout=15)
+        return proc.stdout.strip() if proc.returncode == 0 else None
+
+    try:
+        dirty = git("status", "--porcelain")
+        ahead = git("rev-list", "--count", "@{u}..HEAD")
+    except (OSError, subprocess.SubprocessError):
+        dirty = ahead = None
+    if dirty is None or ahead is None:
+        r.warn("git 상태를 확인할 수 없음")
+        return
+    if dirty:
+        r.warn("미커밋 변경 %d개 파일" % len(dirty.splitlines()))
+    if ahead != "0":
+        r.warn("미푸시 커밋 %s개 — git push" % ahead)
+    if not dirty and ahead == "0":
+        r.ok("커밋·푸시 모두 반영")
+
+
 def main():
     r = Report()
     check_python(r)
@@ -200,6 +225,7 @@ def main():
     check_hooks_run(r)
     check_context(r)
     check_logs(r)
+    check_repo(r)
     print("문제 %d개" % r.problems)
     return 1 if r.problems else 0
 

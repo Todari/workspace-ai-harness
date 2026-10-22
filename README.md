@@ -99,7 +99,7 @@ context/local/
 - `handoff_extract.py`: PreCompact(Claude·Codex)에서 트랜스크립트로 자동 인계 노트(요청·편집 파일·검증 명령·git 상태)를 기계적으로 생성. 같은 세션의 수동 노트가 있으면 덮지 않음
 - `register_hooks.py` / `register_codex.py`: Claude Code / Codex 훅 등록
 - `register_orchestration.py`: Claude 명령 자산(`/handoff`)을 workspace `.claude/`에 동기화
-- `doctor.py`: 등록·동기화·리비전·레지스트리 드리프트 점검
+- `doctor.py`: 등록·동기화·리비전·레지스트리 드리프트와 하네스 레포의 미커밋·미푸시 점검
 - `stats.py`: 훅 이벤트, 검증 이행률, 선택적 Claude·Codex 세션 토큰
 - `vault_search.py` / `obsidian_bridge.py` / `vault_subagent.py`: Obsidian 연동
 
