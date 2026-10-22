@@ -200,9 +200,9 @@ def pre_compact(data, cwd, session_id):
     if meta.get("session_id") == session_id and not meta.get("auto"):
         return None
     path = data.get("transcript_path", "")
-    client = "codex" if context_watch.is_codex_transcript(path) else "claude"
-    if client == "codex" and not path:
+    if not path:
         path = context_watch.find_codex_transcript(session_id)
+    client = "codex" if context_watch.is_codex_transcript(path) else "claude"
     body = handoff_extract.build_note(path, cwd, client)
     if not body:
         return None
@@ -258,15 +258,21 @@ def cli_main(argv):
                                                  len(meta.get("consumed_by", []))))
 
 
+def cli_args():
+    # Registration revision is hook metadata, not a CLI subcommand.
+    return [arg for arg in sys.argv[1:] if not arg.startswith("--harness-rev=")]
+
+
 def main():
-    if len(sys.argv) > 1:
-        cli_main(sys.argv[1:])
+    args = cli_args()
+    if args:
+        cli_main(args)
         return
     hook_main(lib.read_hook_input())
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
+    if cli_args():
         main()
     else:
         lib.run_fail_open(main)

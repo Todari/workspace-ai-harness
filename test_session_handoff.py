@@ -19,6 +19,15 @@ def _transcript(total):
 
 
 class Handoff(unittest.TestCase):
+    def test_registered_revision_argument_uses_hook_mode(self):
+        with mock.patch("sys.argv", ["session_handoff.py", "--harness-rev=fixture"]), \
+                mock.patch.object(sh.lib, "read_hook_input", return_value={}), \
+                mock.patch.object(sh, "hook_main") as hook, \
+                mock.patch.object(sh, "cli_main") as cli:
+            sh.main()
+        hook.assert_called_once_with({})
+        cli.assert_not_called()
+
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
         patcher = mock.patch.object(sh, "HANDOFF_DIR", self.tmp)
@@ -114,6 +123,21 @@ class Handoff(unittest.TestCase):
 
     def test_outside_workspace_is_ignored(self):
         self.assertIsNone(sh.handle({"hook_event_name": "SessionStart", "cwd": "/tmp", "source": "startup"}))
+
+    def test_precompact_finds_codex_rollout_without_transcript_path(self):
+        path = os.path.join(self.tmp, "rollout-thread-compact.jsonl")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"type": "response_item", "payload": {
+                "type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "압축 전 요청 보존"}]}}) + "\n")
+        with mock.patch.object(sh.context_watch, "find_codex_transcript", return_value=path) as lookup:
+            sh.handle({"hook_event_name": "PreCompact", "cwd": CWD,
+                       "thread_id": "thread-compact"})
+        lookup.assert_called_once_with("thread-compact")
+        body, meta = sh.load(CWD)
+        self.assertIn("압축 전 요청 보존", body)
+        self.assertEqual(meta["client"], "codex")
+        self.assertTrue(meta["auto"])
 
     def test_missing_sections(self):
         self.assertEqual(sh.missing_sections("## 목표\n## 결정\n## 진행\n## 검증 상태\n## 다음 할 일\n## 주의"), [])

@@ -10,7 +10,7 @@
     python3 vault_search.py "배낭" --full           # 매칭 노트 전문 출력
     python3 vault_search.py --list 프로젝트          # 특정 타입 노트 목록
 
-출력은 컴팩트하다(노트당 경로 + 매칭 줄 발췌). 결과가 없으면 조용히 "0건"만 알린다.
+출력은 컴팩트하다(노트당 경로 + 매칭 줄 발췌). 읽기 실패는 부분 결과와 exit 1로 알린다.
 """
 import argparse
 import os
@@ -31,8 +31,8 @@ def nfc(s):
     return unicodedata.normalize("NFC", s)
 
 
-def iter_notes(include_archive):
-    for root, dirs, files in os.walk(VAULT):
+def iter_notes(include_archive, onerror=None):
+    for root, dirs, files in os.walk(VAULT, onerror=onerror):
         dirs[:] = [d for d in dirs if d not in SKIP]
         rel_root = os.path.relpath(root, VAULT)
         if not include_archive and rel_root.split(os.sep)[0] == "Archive":
@@ -50,12 +50,14 @@ def note_type(body):
     return t.group(1).strip() if t else ""
 
 
-def read(path):
+def read(path, onerror=None):
     try:
         with open(path, encoding="utf-8", errors="ignore") as f:
             return f.read()
-    except OSError:
-        return ""
+    except OSError as exc:
+        if onerror:
+            onerror(exc)
+        return None
 
 
 def main():
@@ -68,28 +70,44 @@ def main():
     ap.add_argument("--archive", action="store_true", help="Archive/ 포함")
     args = ap.parse_args()
 
-    if not os.path.isdir(VAULT):
-        print("볼트 접근 불가 — 전체 디스크 접근 권한이 없는 환경으로 보임")
-        return 1
     if not args.query and not args.list_type:
         ap.print_help()
         return 2
+    if not os.path.isdir(VAULT):
+        print("볼트 접근 불가 — 경로·권한·iCloud 상태를 확인하세요", file=sys.stderr)
+        return 1
+
+    failures = 0
+
+    def onerror(exc):
+        nonlocal failures
+        failures += 1
+
+    def finish():
+        if failures:
+            print(f"볼트 검색 불완전 — 파일/폴더 읽기 실패 {failures}건. "
+                  "표시된 결과는 부분 결과이며 경로·권한·iCloud 상태를 확인하세요.",
+                  file=sys.stderr)
+        return int(bool(failures))
 
     # --list: 타입별 목록
     if args.list_type:
         rows = []
-        for p in iter_notes(args.archive):
-            if nfc(note_type(read(p))) == nfc(args.list_type):
+        for p in iter_notes(args.archive, onerror):
+            body = read(p, onerror)
+            if body is not None and nfc(note_type(body)) == nfc(args.list_type):
                 rows.append(os.path.relpath(p, VAULT))
-        print(f"type={args.list_type}: {len(rows)}건")
+        print(f"type={args.list_type}: {len(rows)}건" + (" (부분 결과)" if failures else ""))
         for r in sorted(rows):
             print(f"  {r}")
-        return 0
+        return finish()
 
     q = nfc(args.query).lower()
     results = []
-    for p in iter_notes(args.archive):
-        body = read(p)
+    for p in iter_notes(args.archive, onerror):
+        body = read(p, onerror)
+        if body is None:
+            continue
         if args.type and nfc(note_type(body)) != nfc(args.type):
             continue
         hay = nfc(body).lower()
@@ -106,10 +124,14 @@ def main():
         results.append((os.path.relpath(p, VAULT), note_type(body), hits, body))
 
     if not results:
-        print(f'"{args.query}" 관련 노트 0건.')
-        return 0
+        if failures:
+            print(f'"{args.query}" 관련 노트 없음 — 읽기 실패로 전체 결과를 확인하지 못했습니다.')
+        else:
+            print(f'"{args.query}" 관련 노트 0건.')
+        return finish()
 
     print(f'"{args.query}" 관련 노트 {len(results)}건'
+          + (" (부분 결과)" if failures else "")
           + (f" (상위 {MAX_NOTES}건 표시)" if len(results) > MAX_NOTES else ""))
     for rel, typ, hits, body in results[:MAX_NOTES]:
         print(f"\n## {rel}" + (f"  [type: {typ}]" if typ else ""))
@@ -118,7 +140,7 @@ def main():
         else:
             for h in hits:
                 print(f"  … {h} …")
-    return 0
+    return finish()
 
 
 if __name__ == "__main__":

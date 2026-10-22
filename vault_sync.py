@@ -53,14 +53,18 @@ class PreflightError(Exception):
 
 
 def git_output(vault, *args):
+    # Fixed labels only: arguments and stderr can contain credentials or URLs.
+    stage = {"rev-parse": "로컬 HEAD", "status": "Markdown 상태",
+             "branch": "현재 브랜치", "config": "upstream 설정",
+             "ls-remote": "원격 HEAD"}.get(args[0] if args else "", "Git 명령")
     try:
         proc = subprocess.run(
             ["git", "-C", vault, *args], capture_output=True, text=True,
             timeout=20, env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"})
     except (OSError, subprocess.SubprocessError):
-        raise PreflightError("Git 확인을 완료하지 못했습니다") from None
+        raise PreflightError(f"Git 확인을 완료하지 못했습니다 ({stage})") from None
     if proc.returncode:
-        raise PreflightError("Git 확인 실패: 저장소 또는 upstream 상태를 확인하세요")
+        raise PreflightError(f"Git 확인 실패 ({stage}): 저장소 또는 upstream 상태를 확인하세요")
     return proc.stdout.strip()
 
 

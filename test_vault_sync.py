@@ -186,6 +186,15 @@ class PreflightTest(unittest.TestCase):
             with self.assertRaises(vault_sync.PreflightError) as raised:
                 vault_sync.git_output("/fixture", "ls-remote", "origin", "refs/heads/main")
         self.assertNotIn("private", str(raised.exception))
+        self.assertIn("원격 HEAD", str(raised.exception))
+
+    def test_git_timeout_identifies_stage_without_exposing_arguments(self):
+        with patch.object(vault_sync.subprocess, "run", side_effect=
+                          subprocess.TimeoutExpired(["private-credential"], 20)):
+            with self.assertRaises(vault_sync.PreflightError) as raised:
+                vault_sync.git_output("/fixture", "status", "private-credential")
+        self.assertIn("Markdown 상태", str(raised.exception))
+        self.assertNotIn("private", str(raised.exception))
 
     def test_git_status_detects_root_and_nested_markdown_only(self):
         with tempfile.TemporaryDirectory() as d:
