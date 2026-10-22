@@ -14,7 +14,8 @@ COMPACT_TOKENS = 250_000   # 압축 권고
 RESTART_TOKENS = 500_000   # 새 세션 강권
 LARGE_OUTPUT_CHARS = 6_000  # 도구 출력 경고
 TAIL_BYTES = 512_000        # 트랜스크립트 끝에서 읽는 양
-NOTED_TOOLS = ("Bash", "Read", "Grep", "Glob", "WebFetch")
+# Read는 뺀다. 편집 전에 파일을 읽는 것은 의도된 일이고, 넣었을 때 14일간 경고 5,488건 중 65%가 Read였다.
+NOTED_TOOLS = ("Bash", "Grep", "Glob", "WebFetch")
 
 
 def last_context_tokens(transcript_path):

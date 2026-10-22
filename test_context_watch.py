@@ -39,11 +39,12 @@ class OutputAdvice(unittest.TestCase):
     def test_small_or_unlisted_tool_is_silent(self):
         self.assertEqual(cw.output_advice("Bash", {"stdout": "ok"}), "")
         self.assertEqual(cw.output_advice("Edit", "x" * 20_000), "")
+        self.assertEqual(cw.output_advice("Read", "x" * 20_000), "")
 
     def test_large_output_warns(self):
         self.assertIn("head/tail/grep", cw.output_advice("Bash", {"stdout": "x" * 9_000}))
-        self.assertIn("head/tail/grep", cw.output_advice("Read", "x" * 9_000))
-        self.assertIn("head/tail/grep", cw.output_advice("Read", [{"text": "x" * 9_000}]))
+        self.assertIn("head/tail/grep", cw.output_advice("Grep", "x" * 9_000))
+        self.assertIn("head/tail/grep", cw.output_advice("WebFetch", [{"text": "x" * 9_000}]))
 
 
 if __name__ == "__main__":
