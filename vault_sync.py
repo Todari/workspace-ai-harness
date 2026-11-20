@@ -12,7 +12,7 @@
 크론: 55 7,12,18 * * * (다이제스트 08:30 KST 전에 최신화).
 설정: ops.env 의 VAULT_SYNC_URL / VAULT_SYNC_SECRET (서버 .env.production 과 동일 값).
 실전송은 깨끗한 Markdown과 Git upstream의 실제 원격 HEAD 일치를 확인한다.
-확인 후 전송 사이의 원격 변경은 수신 측 revision 검사 없이는 완전히 막을 수 없다.
+수신 측도 원격 HEAD를 확인한다. 호스트별 운영 원장의 작업 상태 요약을 함께 서명한다.
 
 파싱 규칙:
 - 레포 레지스트리의 vault_note와 기존 `프로젝트/*.md`, 이정표 허브를 수집한다.
@@ -33,6 +33,7 @@ import urllib.error
 import urllib.request
 
 import harness_lib as lib
+import ops_report
 import repos
 
 VAULT = lib.VAULT_ROOT
@@ -309,7 +310,7 @@ def main():
         return 1
     payload = {
         "generatedAt": datetime.datetime.now(datetime.timezone.utc)
-        .isoformat(timespec="seconds").replace("+00:00", "Z"),
+        .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
         "notes": notes,
     }
     n_tasks = sum(len(n["tasks"]) for n in notes)
@@ -332,6 +333,7 @@ def main():
     except PreflightError as exc:
         print(f"볼트 동기화 보류: {exc}", file=sys.stderr)
         return 1
+    payload["operations"] = ops_report.host_job_health()
     rc = post(payload, load_ops_env())
     if rc == 0:
         print(summary)

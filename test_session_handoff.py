@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest import mock
@@ -29,11 +30,15 @@ class Handoff(unittest.TestCase):
         cli.assert_not_called()
 
     def setUp(self):
-        self.tmp = tempfile.mkdtemp()
+        directory = tempfile.TemporaryDirectory()
+        self.tmp = directory.name
+        self.addCleanup(directory.cleanup)
         patcher = mock.patch.object(sh, "HANDOFF_DIR", self.tmp)
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.addCleanup(mock.patch.object(lib, "event", lambda *a, **k: None).start)
+        event_patch = mock.patch.object(lib, "event", lambda *a, **k: None)
+        event_patch.start()
+        self.addCleanup(event_patch.stop)
 
     def test_stop_blocks_once_when_context_is_huge(self):
         path = _transcript(600_000)
@@ -65,13 +70,42 @@ class Handoff(unittest.TestCase):
         self.assertIsNone(sh.handle(dict(start, session_id="old")))  # 작성자 세션
 
     def test_done_and_ttl(self):
-        sh.write(CWD, "## 목표\nx", session_id="old")
-        _, meta = sh.load(CWD)
-        meta["written_at"] -= sh.HANDOFF_TTL_SECONDS + 10
-        sh.save_meta(CWD, meta)
-        self.assertEqual(sh.load(CWD), (None, {}))
-        self.assertTrue(sh.done(CWD))
-        self.assertFalse(sh.done(CWD))
+        path = sh.write(CWD, "## 목표\nx", session_id="old")
+        with mock.patch.object(sh.time, "time", return_value=sh.time.time() + sh.HANDOFF_TTL_SECONDS + 10):
+            self.assertEqual(sh.load(CWD), (None, {}))
+        self.assertTrue(sh.done(CWD, Path(path).stem))
+        self.assertFalse(sh.done(CWD, Path(path).stem))
+
+    def test_concurrent_notes_and_stale_done(self):
+        old_path = sh.write(CWD, "manual a", session_id="a")
+        sh.write(CWD, "manual b", session_id="b")
+        start = {"hook_event_name": "SessionStart", "cwd": CWD, "session_id": "b"}
+        self.assertIn("manual a", sh.handle(start))
+        sh.write(CWD, "updated a", session_id="a")
+        self.assertFalse(sh.done(CWD, Path(old_path).stem))
+        self.assertIsNone(sh.handle(start))  # same reader already received a note
+        self.assertEqual(sh.load(CWD, session_id="a")[0].strip(), "updated a")
+        _, b = sh.load(CWD, session_id="b")
+        self.assertTrue(sh.done(CWD, b["note_id"]))
+        self.assertEqual(sh.load(CWD)[0].strip(), "updated a")
+
+    def test_legacy_note_stays_available_and_migrates_on_origin_write(self):
+        base = Path(self.tmp) / sh.key_for(CWD)
+        base.with_suffix(".md").write_text("legacy body")
+        base.with_suffix(".json").write_text(json.dumps({
+            "cwd": CWD, "session_id": "legacy", "written_at": sh.time.time(), "consumed_by": [],
+        }))
+        sh.write(CWD, "parallel", session_id="other")
+        start = {"hook_event_name": "SessionStart", "cwd": CWD, "session_id": "other"}
+        text = sh.handle(start)
+        self.assertIn("legacy body", text)
+        self.assertIn("--note", text)
+        _, meta = sh.load(CWD, session_id="legacy")
+        self.assertIn("other", meta["consumed_by"])
+        sh.write(CWD, "migrated", session_id="legacy")
+        self.assertFalse(sh.done(CWD, meta["note_id"]))
+        self.assertEqual(sh.load(CWD, session_id="legacy")[0].strip(), "migrated")
+        self.assertEqual(sh.load(CWD, session_id="other")[0].strip(), "parallel")
 
     def _codex_rollout(self, ctx, total):
         f = tempfile.NamedTemporaryFile("w", prefix="rollout-2026-09-17T00-00-00-abc-", suffix=".jsonl",

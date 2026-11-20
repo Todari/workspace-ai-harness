@@ -139,43 +139,36 @@ def is_in_place_option(token):
     return token.startswith("-") and "i" in token[1:].split("=", 1)[0]
 
 
+def write_targets(segment, cwd):
+    """Yield (operation, path) for writes in one shell segment."""
+    for i, token in enumerate(segment[:-1]):
+        if token in (">", ">>"):
+            real = resolve(segment[i + 1], cwd)
+            if is_workspace_source(real):
+                yield "리다이렉션", real
+    if not segment:
+        return
+    tool = os.path.basename(segment[0])
+    args = segment[1:]
+    if (is_git_apply(segment) or tool in ("patch", "apply_patch")) and "--check" not in args:
+        yield "patch/git apply", None
+    if tool in ("sed", "perl") and any(is_in_place_option(arg) for arg in args):
+        for arg in args:
+            if not arg.startswith("-"):
+                real = resolve(arg, cwd)
+                if real and os.path.isfile(real) and is_workspace_source(real):
+                    yield "in-place 편집", real
+    if tool == "tee":
+        for arg in args:
+            if not arg.startswith("-"):
+                real = resolve(arg, cwd)
+                if is_workspace_source(real):
+                    yield "tee", real
+
+
 def find_write_target(command, cwd):
     """workspace 소스를 쓰는 셸 명령이면 설명 문자열, 아니면 None."""
-    toks = tokens(command)
-    for i, tok in enumerate(toks[:-1]):
-        if tok in (">", ">>"):
-            real = resolve(toks[i + 1], cwd)
-            if is_workspace_source(real):
-                return "리다이렉션 → " + real
-    segments = command_segments(toks)
-    if any(is_git_apply(segment) or
-           (segment and os.path.basename(segment[0]) == "patch")
-           for segment in segments):
-        return "patch/git apply"
-    for i, tok in enumerate(toks):
-        if os.path.basename(tok) not in ("sed", "perl"):
-            continue
-        segment = []
-        for t in toks[i + 1:]:
-            if t in SEPARATORS:
-                break
-            segment.append(t)
-        if not any(is_in_place_option(t) for t in segment):
-            continue
-        for target in segment:
-            if target.startswith("-"):
-                continue
-            real = resolve(target, cwd)
-            if real and os.path.isfile(real) and is_workspace_source(real):
-                return "in-place 편집 → " + real
-    for i, tok in enumerate(toks):
-        if tok == "tee":
-            for t in toks[i + 1:]:
-                if t.startswith("-"):
-                    continue
-                if t in SEPARATORS:
-                    break
-                real = resolve(t, cwd)
-                if is_workspace_source(real):
-                    return "tee → " + real
+    for segment in command_segments(tokens(command)):
+        for operation, path in write_targets(segment, cwd):
+            return operation + " → " + path if path else operation
     return None

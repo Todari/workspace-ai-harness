@@ -35,6 +35,7 @@ class ClaudeExtract(unittest.TestCase):
         for section in ("## 목표", "## 결정", "## 진행", "## 검증 상태", "## 다음 할 일", "## 주의"):
             self.assertIn(section, note)
         self.assertIn("배포해줘", note)
+        self.assertIn("git 상태 미확인", note)
         os.remove(path)
 
     def test_empty_transcript_gives_no_note(self):
@@ -44,6 +45,15 @@ class ClaudeExtract(unittest.TestCase):
 
 
 class CodexExtract(unittest.TestCase):
+    def test_only_structured_shell_tool_reports_write_target(self):
+        import harness_lib as lib
+
+        ex = hx.Extract(lib.WORKSPACE_ROOT)
+        ex.add_tool("exec", "const f = x => fake.ts")
+        ex.add_tool("read_file", {"command": "echo x > fake2.ts"})
+        ex.add_tool("exec_command", {"cmd": "echo x > real.ts"})
+        self.assertEqual(ex.files, [os.path.join(lib.WORKSPACE_ROOT, "real.ts")])
+
     def test_reads_user_messages_and_patches(self):
         patch = "*** Begin Patch\n*** Update File: src/b.ts\n@@\n*** End Patch"
         path = _write([
@@ -51,8 +61,9 @@ class CodexExtract(unittest.TestCase):
                                                   "content": [{"type": "input_text", "text": "# AGENTS.md instructions"}]}},
             {"type": "response_item", "payload": {"type": "message", "role": "user",
                                                   "content": [{"type": "input_text", "text": "봇 수정해줘"}]}},
+            {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "apply_patch", "input": patch}},
             {"type": "response_item", "payload": {"type": "custom_tool_call", "name": "exec",
-                                                  "input": "apply_patch <<'EOF'\n" + patch + "\nEOF"}},
+                                                  "input": "const f = x => x; " + patch}},
             {"type": "response_item", "payload": {"type": "function_call", "name": "shell",
                                                   "arguments": json.dumps({"command": ["npm", "test"]})}},
             {"type": "response_item", "payload": {"type": "message", "role": "assistant",

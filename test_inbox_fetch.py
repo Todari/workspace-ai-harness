@@ -3,6 +3,9 @@
 import contextlib
 import io
 import json
+import tempfile
+from pathlib import Path
+from urllib.parse import urlsplit, parse_qs
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -56,34 +59,80 @@ class ItemParseTest(unittest.TestCase):
         self.assertIn("둘째 줄", r["text"])
 
 
-class PaginationTest(unittest.TestCase):
-    def test_fetches_old_capture_beyond_first_hundred_messages(self):
-        first = [message(mid) for mid in range(201, 101, -1)]
-        second = [message(101, "📥 [task] (lvti) 오래된 캡처")]
-        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, first, second]) as api:
-            items = inbox_fetch.pending_items(CFG)
-        self.assertEqual([item["id"] for item in items], ["101"])
-        self.assertEqual(api.call_args_list[2].args[2], "/channels/42/messages?limit=100&before=102")
+class IndexTestCase(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = patch.object(inbox_fetch.ops_report, "DB", Path(tmp.name) / "ledger.db")
+        db.start()
+        self.addCleanup(db.stop)
 
-    def test_acknowledged_and_foreign_messages_are_excluded_and_unknown_preserved(self):
+
+class PaginationTest(IndexTestCase):
+    def setUp(self):
+        super().setUp()
+        self.messages = {}
+        self.requests = []
+        api = patch.object(inbox_fetch, "api", side_effect=self.api)
+        api.start()
+        self.addCleanup(api.stop)
+
+    def feed(self, *messages):
+        self.messages.update((int(m["id"]), m) for m in messages)
+
+    def api(self, cfg, method, path):
+        self.requests.append(path)
+        if path == "/users/@me":
+            return {"id": "bot"}
+        query = parse_qs(urlsplit(path).query)
+        if query:
+            after, limit = int(query["after"][0]), int(query["limit"][0])
+            ids = sorted(i for i in self.messages if i > after)[:limit]
+            return [self.messages[i] for i in reversed(ids)]
+        return self.messages[int(path.rsplit("/", 1)[1])]
+
+    def test_resumes_after_two_thousand_messages_and_only_fetches_new_history(self):
+        self.feed(*(message(i) for i in range(1, 2103)))
+        self.feed(message(2, "📥 [task] 오래된 캡처"), message(2102, "📥 [idea] 새 캡처"))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual([i["id"] for i in inbox_fetch.pending_items(CFG)], ["2"])
+        self.requests.clear()
+        items = inbox_fetch.pending_items(CFG)
+        self.assertEqual([i["id"] for i in items], ["2", "2102"])
+        self.assertIn("after=2000", self.requests[1])
+        self.requests.clear()
+        self.assertEqual(inbox_fetch.pending_items(CFG, count_only=True), 2)
+        self.assertEqual(self.requests, ["/users/@me", "/channels/42/messages?limit=100&after=2102"])
+
+    def test_filters_acknowledged_or_foreign_captures_and_preserves_unknown(self):
         unknown = "📥 [future] (lvti) 새 형식\n원문 유지"
-        page = [
-            message(4, "📥 [task] 처리함", reactions=[{"emoji": {"name": "✅"}, "me": True}]),
-            message(3, "📥 [task] 남의 글", author={"id": "other"}),
-            message(2, unknown),
-            message(1, "📥 [note] (lvti) 수정"),
-        ]
-        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, page]):
-            items = inbox_fetch.pending_items(CFG)
-        self.assertEqual([item["id"] for item in items], ["1", "2"])
-        self.assertEqual(items[1]["kind"], "quarantine")
-        self.assertEqual(items[1]["text"], unknown)
+        reaction = [{"emoji": {"name": "✅"}, "me": True}]
+        self.feed(message(4, "📥 [task] 처리함", reactions=reaction),
+                  message(3, "📥 [task] 남의 글", author={"id": "other"}),
+                  message(2, unknown), message(1, "📥 [note] (lvti) 수정"))
+        items = inbox_fetch.pending_items(CFG)
+        self.assertEqual([i["id"] for i in items], ["1", "2"])
+        self.assertEqual((items[1]["kind"], items[1]["text"]), ("quarantine", unknown))
+        self.messages[1]["reactions"] = reaction
+        self.assertEqual([i["id"] for i in inbox_fetch.pending_items(CFG)], ["2"])
+        self.assertEqual(inbox_fetch.pending_items(CFG, count_only=True), 1)
 
-    def test_full_page_at_limit_fails_instead_of_returning_partial_items(self):
-        first = [message(mid, "📥 [task] 남은 일") for mid in range(100, 0, -1)]
-        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, first]):
-            with self.assertRaisesRegex(inbox_fetch.InboxError, "조회 상한"):
-                inbox_fetch.pending_items(CFG, max_pages=1)
+    def test_full_page_at_end_is_complete_and_overlaps_deduplicate(self):
+        self.feed(*(message(i) for i in range(1, 101)))
+        self.feed(message(100, "📥 [task] 보존"))
+        self.assertEqual(inbox_fetch.pending_items(CFG, max_pages=1, count_only=True), 1)
+        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"},
+                [self.messages[100], message(101, "📥 [task] 새 항목")]]):
+            self.assertEqual(inbox_fetch.pending_items(CFG, count_only=True), 2)
+
+    def test_deleted_original_is_quarantined_without_blocking_other_captures(self):
+        self.feed(message(1, "📥 [task] 사라짐"), message(2, "📥 [task] 정상"))
+        self.assertEqual(inbox_fetch.pending_items(CFG, count_only=True), 2)
+        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, [],
+                          inbox_fetch.InboxError("Discord HTTP 404"), self.messages[2]]):
+            missing, valid = inbox_fetch.pending_items(CFG)
+        self.assertEqual(missing["reason"], "original_message_missing")
+        self.assertEqual(valid["text"], "정상")
 
     def test_repeated_full_page_does_not_loop(self):
         page = [message(mid) for mid in range(100, 0, -1)]
@@ -91,24 +140,31 @@ class PaginationTest(unittest.TestCase):
             with self.assertRaisesRegex(inbox_fetch.InboxError, "커서"):
                 inbox_fetch.pending_items(CFG)
 
-    def test_overlap_is_deduplicated_and_result_is_oldest_first(self):
-        first = [message(mid, "📥 [task] 항목") for mid in range(201, 101, -1)]
-        second = [message(102, "📥 [task] 항목"), message(101, "📥 [task] 항목")]
-        with patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, first, second]):
-            items = inbox_fetch.pending_items(CFG)
-        self.assertEqual(len(items), 101)
-        self.assertEqual(items[0]["id"], "101")
-
-    def test_count_page_failure_is_nonzero_with_no_zero_output(self):
-        first = [message(mid) for mid in range(100, 0, -1)]
+    def test_count_page_failure_is_nonzero_and_checkpoint_survives(self):
+        self.feed(*(message(i) for i in range(1, 102)))
         out, err = io.StringIO(), io.StringIO()
         with patch.object(inbox_fetch, "load_env", return_value=CFG), \
-                patch.object(inbox_fetch, "api", side_effect=[{"id": "bot"}, first]), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = inbox_fetch.main(["count", "--max-pages", "1"])
-        self.assertEqual(rc, 1)
+            self.assertEqual(inbox_fetch.main(["count", "--max-pages", "1"]), 1)
         self.assertEqual(out.getvalue(), "")
         self.assertIn("상한", err.getvalue())
+        self.assertEqual(inbox_fetch.pending_items(CFG, max_pages=1), [])
+
+    def test_long_capture_round_trips_without_sending_bot_token(self):
+        content = "📥 [til] " + "긴 본문 " * 1400
+        data = content.encode()
+        url = "https://cdn.discordapp.com/attachments/42/1/inbox-capture.txt?signature=test"
+        self.feed(message(1, inbox_fetch.FILE_ENVELOPE, attachments=[{
+            "filename": "inbox-capture.txt", "url": url, "size": len(data)}]))
+        with patch.object(inbox_fetch.urllib.request, "build_opener") as opener:
+            opener.return_value.open.return_value = io.BytesIO(data)
+            item, = inbox_fetch.pending_items(CFG)
+            self.assertNotIn("Authorization", opener.return_value.open.call_args.args[0].headers)
+        self.assertEqual((item["kind"], item["text"]), ("til", content[8:].strip()))
+        self.messages[1]["attachments"][0]["url"] = "https://example.com/attachments/42/1"
+        item, = inbox_fetch.pending_items(CFG)
+        self.assertEqual((item["kind"], item["reason"]), ("quarantine", "invalid_capture_attachment"))
+        self.assertEqual(inbox_fetch.pending_items(CFG, count_only=True), 1)
 
 
 class ApiRetryTest(unittest.TestCase):
@@ -159,7 +215,7 @@ class ApiRetryTest(unittest.TestCase):
         self.assertNotIn(CFG["DISCORD_BOT_TOKEN"], str(raised.exception))
 
 
-class AckTest(unittest.TestCase):
+class AckTest(IndexTestCase):
     def test_partial_failure_attempts_every_unique_id_and_exits_nonzero(self):
         out, err = io.StringIO(), io.StringIO()
         with patch.object(inbox_fetch, "load_env", return_value=CFG), \

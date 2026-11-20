@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -217,12 +218,21 @@ def job_health(db=DB, now=None):
 
 def build_report(days=1, db=DB):
     return {'schema_version': 1, 'generated_at': utcnow(),
-            'metrics': stats.collect_report(days, include_claude=False), 'jobs': job_health(db)}
+            'metrics': stats.collect_report(days, include_claude=False), **host_job_health(db)}
+
+
+def host_job_health(db=DB):
+    try:
+        jobs = job_health(db)
+    except (OSError, sqlite3.Error):
+        jobs = [{'job': name, 'status': 'unknown', 'last_success': None} for name in JOB_MAX_AGE]
+    return {'hostname': socket.gethostname(), 'jobs': jobs}
 
 
 def markdown(report):
     m = report['metrics']
     lines = ['# 워크스페이스 운영 리포트', '', report['generated_at'], '',
+             '- 로컬 실행 호스트: ' + report.get('hostname', 'unknown'),
              '- 집계 기간: 최근 %g일' % m['days'],
              '- Claude 전체 사용량: 생략 (`stats.py --include-claude`로 별도 조회)',
              '', '| 자동화 | 상태 | 종료 코드 | 최근 실행(UTC) | 마지막 성공(UTC) |',
@@ -285,15 +295,18 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def deliver(channel, url, text, key, db=DB, retry_failed=False):
+def deliver(channel, url, text, key, db=DB, retry_failed=False, retry_uncertain=False):
     validate_webhook(channel, url)
     # Include destination identity without persisting the credential-bearing URL.
     identity = hashlib.sha256((channel + '\0' + url + '\0' + key).encode()).hexdigest()
     with database(db) as conn:
         conn.execute('BEGIN IMMEDIATE')
         old = conn.execute('SELECT status FROM deliveries WHERE delivery_key=?', (identity,)).fetchone()
-        if old and (old[0] != 'failed' or not retry_failed):
-            return 'already-' + old[0]
+        if old:
+            retry = (old[0] == 'failed' and retry_failed
+                     or old[0] in ('uncertain', 'sending') and retry_uncertain)
+            if not retry:
+                return 'already-' + old[0]
         conn.execute('INSERT OR REPLACE INTO deliveries VALUES(?,?,?,NULL)',
                      (identity, 'sending', time.time()))
     request_url = url
@@ -312,8 +325,9 @@ def deliver(channel, url, text, key, db=DB, retry_failed=False):
                 raise ValueError('unexpected status')
     except urllib.error.HTTPError as exc:
         error, status = 'http_%d' % exc.code, 'failed'
+        exc.close()
     except Exception:
-        # Timeout may mean accepted-but-response-lost. Never automatically resend.
+        # Timeout may mean accepted-but-response-lost. Callers choose whether to retry.
         error, status = 'delivery_unknown', 'uncertain'
     with database(db) as conn:
         conn.execute('UPDATE deliveries SET status=?,updated_at=?,error_code=? WHERE delivery_key=?',

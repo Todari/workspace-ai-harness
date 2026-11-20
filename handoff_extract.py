@@ -6,18 +6,15 @@ PreCompact 훅이 모델 개입 없이 쓰는 안전망이다. 사용자 요청�
 """
 import json
 import os
-import re
 import subprocess
 
-import edit_detect
 import verify_gate
 
 MAX_PROMPT_CHARS = 240
 MAX_PROMPTS = 6
 MAX_FILES = 25
 MAX_COMMANDS = 8
-EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit", "apply_patch")
-PATCH_FILE_RE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.MULTILINE)
+EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
 SKIP_PREFIXES = ("<", "# AGENTS.md", "[Request interrupted", "Caveat:", "This session is being continued")
 
 
@@ -46,16 +43,13 @@ def _iter_rows(path):
                 yield row
 
 
-def _command_text(args):
+def _structured_args(args):
     if isinstance(args, str):
         try:
             args = json.loads(args)
         except ValueError:
-            return args
-    if not isinstance(args, dict):
-        return ""
-    value = args.get("command") or args.get("cmd") or args.get("input") or ""
-    return " ".join(value) if isinstance(value, list) else str(value)
+            return {}
+    return args if isinstance(args, dict) else {}
 
 
 class Extract:
@@ -71,28 +65,33 @@ class Extract:
             self.files.append(path)
 
     def add_command(self, command):
+        if not verify_gate.is_verify_command(command):
+            return
         command = _clip(command, 160)
-        if command and verify_gate.is_verify_command(command) and command not in self.commands:
+        if command not in self.commands:
             self.commands.append(command)
 
     def add_tool(self, name, args):
+        name = name.removeprefix("functions.")
+        options = _structured_args(args)
         if name in EDIT_TOOLS:
-            if isinstance(args, dict):
-                for key in ("file_path", "path", "notebook_path"):
-                    if args.get(key):
-                        self.add_file(str(args[key]))
-            for match in PATCH_FILE_RE.findall(_command_text(args) if name == "apply_patch" else ""):
-                self.add_file(match.strip())
+            for key in ("file_path", "path", "notebook_path"):
+                if isinstance(options.get(key), str):
+                    self.add_file(options[key])
             return
-        command = _command_text(args)
-        for match in PATCH_FILE_RE.findall(command):
-            self.add_file(match.strip())
-        try:
-            target = edit_detect.find_write_target(command, self.cwd)
-        except Exception:  # 감지 실패는 노트 품질 문제일 뿐이다
-            target = None
-        if target:
-            self.add_file(str(target))
+        if name in verify_gate.PATCH_EDIT_TOOLS:
+            patch = verify_gate.patch_input(options) if options else args
+            for path in verify_gate.patch_paths(patch):
+                self.add_file(path.strip())
+            return
+        if name not in verify_gate.SHELL_TOOLS:
+            return
+        command = verify_gate.command_from(options)
+        cwd = verify_gate.tool_cwd(options, self.cwd)
+        edits, _ = verify_gate.shell_operations(command, cwd)
+        for _, path in edits:
+            if path:
+                self.add_file(path)
         self.add_command(command)
 
 
@@ -142,11 +141,11 @@ def from_codex(path, cwd=""):
 
 def git_status(cwd):
     try:
-        out = subprocess.run(["git", "-C", cwd, "status", "--short"], capture_output=True,
-                             text=True, timeout=5).stdout.splitlines()
+        proc = subprocess.run(["git", "-C", cwd, "status", "--short"], capture_output=True,
+                              text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
-        return []
-    return out[:12]
+        return None
+    return proc.stdout.splitlines() if proc.returncode == 0 else None
 
 
 def build_note(transcript_path, cwd, client="claude"):
@@ -167,6 +166,10 @@ def build_note(transcript_path, cwd, client="claude"):
              (["  - `%s`" % c for c in ex.commands[-MAX_COMMANDS:]] or ["  - (기록 없음)"])
     lines += ["## 다음 할 일", "- 마지막 요청을 기준으로 이어간다: %s" % (recent[-1] if recent else "(없음)")]
     status = git_status(cwd)
-    lines += ["## 주의", "- git 미커밋 변경 %d개%s" % (len(status), ":" if status else "")] + \
-             ["  - %s" % s for s in status]
+    lines.append("## 주의")
+    if status is None:
+        lines.append("- git 상태 미확인")
+    else:
+        lines.append("- git 상태 항목 %d개%s" % (len(status), ":" if status else ""))
+        lines.extend("  - %s" % entry for entry in status[:12])
     return "\n".join(lines) + "\n"

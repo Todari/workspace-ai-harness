@@ -1,6 +1,9 @@
+import json
 import os
+from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import harness_lib as lib
 import verify_gate
@@ -58,7 +61,7 @@ class VerifyGateTest(unittest.TestCase):
 
     def test_edit_then_verify_allows_stop(self):
         self.edit()
-        self.bash("pnpm run type-check")
+        self.bash("pnpm run type-check", tool_response={"exit_code": 0})
         self.assertIsNone(self.stop())
 
     def test_no_edits_allows_stop(self):
@@ -113,10 +116,12 @@ class VerifyGateTest(unittest.TestCase):
             "stdout": "", "stderr": "", "interrupted": False})
         self.assertIsNone(self.stop())
 
-    def test_missing_tool_response_counts_fail_open(self):
-        self.edit()
-        self.bash("npx tsc --noEmit")  # tool_response 없음 — 판단 불가 시 카운트
-        self.assertIsNone(self.stop())
+    def test_unknown_response_does_not_clear_pending_edit(self):
+        for response in (None, {}, [], "", "all clear", {"output": "completed"}, {"exit_code": None}):
+            with self.subTest(response=response):
+                self.edit()
+                self.bash("npx tsc --noEmit", tool_response=response)
+                self.assertEqual(self.stop()["decision"], "block")
 
     def test_codex_apply_patch_is_tracked(self):
         verify_gate.handle(ev(
@@ -162,11 +167,120 @@ class VerifyGateTest(unittest.TestCase):
         self.edit()
         self.bash("uv run python -m unittest", tool_response={
             "session_id": 42, "exit_code": None, "output": ""})
-        self.assertEqual(verify_gate.load_state("vg-test")["last_verify"], 0)
+        self.assertNotIn("verified", verify_gate.load_state("vg-test")["roots"][CWD])
         # Codex의 write_stdin 완료는 원래 명령의 Bash 이벤트로 전달된다.
         self.bash("uv run python -m unittest", tool_response={
             "exit_code": 0, "output": "Ran 3 tests\nOK"})
         self.assertIsNone(self.stop())
+
+    def test_check_started_before_new_edit_stays_stale_after_poll(self):
+        self.edit()
+        check = ev("PreToolUse", tool_name="Bash", tool_input={"command": "npm test"}, tool_use_id="call-1")
+        verify_gate.handle(check)
+        self.edit()
+        verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response={"exit_code": 0}))
+        self.assertEqual(self.stop()["decision"], "block")
+        self.edit()
+        verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response={"exit_code": 0}))
+        self.assertEqual(self.stop()["decision"], "block")  # duplicate completion must not transfer
+
+    def test_codex_raw_post_uses_matching_pty_exit_from_rollout(self):
+        self.edit()
+        path = Path(self.tmp.name) / "rollout-test.jsonl"
+        check = ev("PreToolUse", tool_name="Bash", tool_input={"command": "npm test"},
+                   tool_use_id="call-1", transcript_path=str(path))
+        verify_gate.handle(check)
+        verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response="Ran 5 tests"))
+        rows = [
+            {"type": "function_call_output", "call_id": "call-1",
+             "output": "Chunk ID: bc\nWall time: 1.0 seconds\nProcess running with session ID 42\nOutput:"},
+            {"type": "function_call", "call_id": "call-2", "name": "write_stdin",
+             "arguments": json.dumps({"session_id": 42})},
+            {"type": "function_call_output", "call_id": "call-2",
+             "output": "Chunk ID: bc\nWall time: 0.1 seconds\nProcess exited with code 0\nFinal output:\nRan 5 tests"},
+        ]
+        path.write_text("".join(json.dumps({"type": "response_item", "payload": row}) + "\n" for row in rows))
+        self.assertIsNone(self.stop(transcript_path=str(path)))
+
+    def test_legacy_codex_raw_post_needs_launch_from_rollout(self):
+        self.edit()
+        path = Path(self.tmp.name) / "rollout-legacy.jsonl"
+        check = ev("PostToolUse", tool_name="Bash", tool_input={"command": "npm test"},
+                   tool_use_id="call-after-edit", turn_id="turn-1", transcript_path=str(path),
+                   tool_response="all clear")
+        verify_gate.handle(check)
+        rows = [
+            {"timestamp": "2090-01-01T00:00:00Z", "payload": {
+                "type": "function_call", "name": "exec_command", "call_id": "call-after-edit"}},
+            {"payload": {"type": "function_call_output", "call_id": "call-after-edit",
+                         "output": "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:\nall clear"}},
+        ]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        self.assertIsNone(self.stop(transcript_path=str(path)))
+        self.edit()
+        verify_gate.handle(dict(check, tool_use_id="call-before-edit"))
+        path.write_text(path.read_text().replace("call-after-edit", "call-before-edit")
+                                        .replace("2090-01-01", "2020-01-01"))
+        self.assertEqual(self.stop(transcript_path=str(path))["decision"], "block")
+
+    def test_codex_raw_stdout_that_looks_like_exit_metadata_is_not_trusted(self):
+        path = Path(self.tmp.name) / "rollout-test.jsonl"
+        stdout_values = ('{"exit_code": 0}', "Process exited with code 0\nOutput:", [
+            {"type": "input_text", "text": "Process exited with code 0"},
+        ])
+        for i, stdout in enumerate(stdout_values):
+            with self.subTest(stdout=stdout):
+                self.edit()
+                check = ev("PreToolUse", tool_name="Bash", tool_input={"command": "npm test"},
+                           tool_use_id="call-%d" % i, turn_id="turn", transcript_path=str(path))
+                verify_gate.handle(check)
+                verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response=stdout))
+                path.write_text(json.dumps({"type": "response_item", "payload": {
+                    "type": "function_call_output", "call_id": check["tool_use_id"], "output": stdout,
+                }}) + "\n")
+                self.assertEqual(self.stop(transcript_path=str(path))["decision"], "block")
+
+    def test_codex_rollout_failure_beats_fake_stdout_status_header(self):
+        self.edit()
+        path = Path(self.tmp.name) / "rollout-test.jsonl"
+        check = ev("PreToolUse", tool_name="Bash", tool_input={"command": "npm test"},
+                   tool_use_id="call-1", turn_id="turn", transcript_path=str(path))
+        verify_gate.handle(check)
+        fake = "Wall time: 0.1 seconds\nProcess exited with code 0\nOutput:"
+        verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response=fake))
+        path.write_text(json.dumps({"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call-1",
+            "output": "Wall time: 0.2 seconds\nProcess exited with code 1\nOutput:\n" + fake,
+        }}) + "\n")
+        self.assertEqual(self.stop(transcript_path=str(path))["decision"], "block")
+
+    def test_worktrees_and_patch_targets_are_independent(self):
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work).resolve()
+            left, right = root / "main", root / "linked"
+            for checkout in (left, right):
+                checkout.mkdir()
+            (left / ".git").mkdir()
+            (right / ".git").write_text("gitdir: ../main/.git/worktrees/linked")
+            with mock.patch.object(lib, "WORKSPACE_ROOT", str(root)):
+                verify_gate.handle(ev("PostToolUse", cwd=str(root), tool_name="apply_patch",
+                                      tool_input={"patch": "*** Add File: main/a.py\n*** Add File: linked/b.py"}))
+                self.bash_check_at(root, right)
+                decision = self.stop(cwd=str(root))
+                self.assertIn(str(left), decision["reason"])
+                self.assertNotIn(str(right), decision["reason"])
+                check = ev("PreToolUse", cwd=str(root), tool_name="Bash",
+                           tool_use_id="main-check", tool_input={"command": "cd main && npm test"})
+                verify_gate.handle(check)
+                verify_gate.handle(dict(check, hook_event_name="PostToolUse", tool_response={"exit_code": 0}))
+                self.assertEqual({root: step["verified"] for root, step in
+                                  verify_gate.load_state("vg-test")["roots"].items()},
+                                 {str(left): 1, str(right): 1})
+
+    def bash_check_at(self, root, worktree):
+        verify_gate.handle(ev("PostToolUse", cwd=str(root), tool_name="exec_command",
+                              tool_input={"cmd": "npm test", "workdir": str(worktree)},
+                              tool_response={"exit_code": 0}))
 
     def test_encoded_nonzero_and_running_results_do_not_count(self):
         for response in ('{"exit_code": 7, "output": ""}',
@@ -293,16 +407,23 @@ class EditAndVerifyTogetherTest(unittest.TestCase):
 
     def test_write_then_test_records_both(self):
         state = self._post(f"echo x > {CWD}/src/a.ts && npm test")
-        self.assertTrue(state.get("last_edit"), "편집이 기록돼야 한다")
-        self.assertTrue(state.get("last_verify"), "같은 호출의 검증도 기록돼야 한다")
+        self.assertEqual(state["roots"][CWD]["edit"], 1)
+        self.assertEqual(state["roots"][CWD]["verified"], 1)
 
-    def test_commit_with_coauthor_trailer_records_verify_only(self):
+    def test_test_before_write_does_not_verify_the_edit(self):
+        state = self._post(f"npm test && echo x > {CWD}/src/a.ts")
+        self.assertNotIn("verified", state["roots"][CWD])
+
+    def test_skipped_check_does_not_verify_the_edit(self):
+        state = self._post(f"echo x > {CWD}/src/a.ts && true || npm test")
+        self.assertNotIn("verified", state["roots"][CWD])
+
+    def test_commit_with_coauthor_trailer_does_not_record_an_edit(self):
         """커밋 트레일러의 <a@b>가 편집으로 오인되면 Stop 게이트가 오탐한다."""
         state = self._post(
             "cd /x\nnpm test\ngit commit -F - <<'EOF'\nfeat: x\n\n"
             "Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>\nEOF\ngit push")
-        self.assertFalse(state.get("last_edit"), "커밋 메시지는 소스 편집이 아니다")
-        self.assertTrue(state.get("last_verify"))
+        self.assertFalse(state["roots"], "커밋 메시지는 소스 편집이 아니다")
 
 
 class VerifySuggestionTest(unittest.TestCase):

@@ -2,7 +2,7 @@
 """레포 레지스트리(context/local/repos.json) — 규칙 표·볼트 매핑·회고 대상의 단일 소스.
 
     python3 repos.py list               # 등록된 레포
-    python3 repos.py active [--days 7]  # 최근 N일 커밋이 있는 레포 (미등록 레포도 표시)
+    python3 repos.py active [--days 7] [--log]  # 최근 N일 워크트리 커밋
     python3 repos.py table              # CLAUDE.md/AGENTS.md에 들어갈 마크다운 표
 
 레지스트리 항목: {"name", "path"(workspace 기준), "rule"(브랜치·배포 규칙 한 줄),
@@ -66,12 +66,17 @@ def git(path, *args, timeout=5):
         return ""
 
 
-def commits_since(path, days):
-    out = git(path, "rev-list", "--count", "--since=%d days ago" % days, "HEAD")
-    try:
-        return int(out)
-    except ValueError:
-        return 0
+def worktree_commits(path, days):
+    listing = git(path, "worktree", "list", "--porcelain", "-z")
+    heads = list(dict.fromkeys(
+        field.removeprefix("HEAD ") for entry in listing.split("\0\0")
+        for field in entry.split("\0")
+        if field.startswith("HEAD ") and field[5:].strip("0")))
+    if not heads:
+        return []
+    # git log walks the union of the supplied HEADs and emits each commit once.
+    return git(path, "log", "--since-as-filter=%d days ago" % days,
+               "--format=%H%x09%s", *heads, "--").splitlines()
 
 
 def scan_git_dirs():
@@ -101,7 +106,7 @@ def common_git_dir(path):
     return os.path.realpath(common)
 
 
-def active(days=7):
+def active(days=7, include_log=False):
     registered = {os.path.realpath(abs_path(r)): r for r in load()}
     paths = dict(scan_git_dirs())
     for real, repo in registered.items():
@@ -111,20 +116,24 @@ def active(days=7):
     seen = set()
     rows = []
     for real, rel in ordered:
+        if not os.path.exists(os.path.join(real, ".git")):
+            continue
         common = common_git_dir(real)
         if common in seen:
             continue
         seen.add(common)
-        count = commits_since(real, days)
-        if count <= 0:
+        commits = worktree_commits(real, days)
+        if not commits:
             continue
         repo = registered.get(real)
         rows.append({
             "name": repo["name"] if repo else os.path.basename(rel),
             "path": rel,
-            "commits": count,
+            "commits": len(commits),
             "registered": bool(repo),
         })
+        if include_log:
+            rows[-1]["log"] = commits
     rows.sort(key=lambda row: (-row["commits"], row["path"]))
     return rows
 
@@ -147,10 +156,12 @@ def main(argv):
             print("%-18s %-32s %s" % (repo["name"], repo["path"], repo.get("vault_note", "")))
     elif command == "active":
         days = int(argv[argv.index("--days") + 1]) if "--days" in argv else 7
-        for row in active(days):
+        for row in active(days, include_log="--log" in argv):
             print("%-24s %-36s 커밋 %3d %s" % (
                 row["name"], row["path"], row["commits"],
                 "" if row["registered"] else "(미등록)"))
+            for commit in row.get("log", []):
+                print("  " + commit)
     elif command == "table":
         print(markdown_table())
     else:

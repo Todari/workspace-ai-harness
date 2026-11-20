@@ -84,9 +84,10 @@ CLI 기준 버전 차이, 오래된 Trade Tower 컨텍스트, 미등록 레포 �
 매 대화 종료 시 별도 문서 작성·승인·알림을 강제하는 훅은 추가하지 않는다.
 
 이번 로컬 개선:
-- 검증: `uv/poetry/pipenv run`, `sh/bash/zsh -c` 인식, 실행 중·비정상 종료 결과를 성공에서 제외.
-  Codex 문서상 비동기 완료는 원래 명령의 `Bash` PostToolUse로 전달된다. `write_stdin` 전용
-  훅을 추측해 추가하지 않았다. 훅이 성공 기록을 놓쳤을 때도 이미 확보한 완료 결과를 재사용하게 안내한다.
+- 검증: 워크트리별 편집 세대를 검증 시작 시점에 기록한다. Codex의 비동기 완료는 원래 명령의
+  `Bash` PostToolUse로 전달된다. 본문만 담긴 응답은 종료 코드로 해석하지 않고 Stop에서 해당
+  호출과 연결된 rollout 종료 결과를 확인한다. 훅에서 완료를 확인할 수 없을 때는 이미 확보한
+  종료 결과를 재사용하도록 안내한다.
 - 볼트: 현재 초점을 제한된 길이로 주입하고, 읽기 실패를 빈 할 일 목록과 구분한다.
 - 운영 리포트: 최근 실행 시각과 종료 코드를 마지막 성공과 함께 보여 주고 동기화 실패 시 확인할 일을 표시한다.
 
@@ -183,6 +184,32 @@ python3 ops_report.py report --channel discord --send
 남기고 자동 재전송하지 않는다. 채널에서 게시 여부를 확인하기 전 새 key로 우회하지 않는다.
 Slack는 plain_text 블록, Discord는 allowed_mentions=[]로 멘션을 막는다. webhook redirect를 따르지 않는다.
 
+### Mac mini 봇 감시
+
+Mac mini에서만 `mac_bot_monitor.py`를 15분마다 실행한다. Python과 저장소 경로를
+Mac mini에 맞춰 등록한다. 새 환경에서는 서버와 Mac mini 모두 코드 반영 후 스케줄을 등록해야 한다.
+
+```cron
+*/15 * * * * /usr/bin/env PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin /usr/bin/python3 "$HOME/.claude/hooks/workspace-harness/mac_bot_monitor.py"
+```
+
+`ops.env`의 `VAULT_SYNC_URL`과 `VAULT_SYNC_SECRET`, 실행 환경 또는 `ops.env`의
+`HARNESS_DISCORD_WEBHOOK_URL`을 사용한다. 봇의 공개 `/healthz`에서 HTTP 200과
+`ok: true`를 함께 확인한다. 실패로 바뀌거나 복구되면 봇과 독립된 Discord 웹훅으로 직접 알린다.
+전송 대기는 로컬 캐시의 `mac-bot-monitor.json`에 기록해 다음 실행에서 발생 순서대로 재시도한다.
+Discord가 메시지를 받고 응답이 유실된 경우 재시도에서 중복 알림이 생길 수 있다.
+
+각 점검은 기존 볼트 서명으로 `/webhook/mac-monitor`에 시각과 결과를 보고한다.
+공개 `/healthz`의 `macProbe`에서 보고 기록과 지연을 확인할 수 있다. 최초 수신 전에는
+`unknown`, 30분 30초를 넘기면 `stale`이다. GitHub Actions 감시는 기존 봇 점검을 계속하며
+오래된 Mac mini 점검도 알린다. 볼트와 맥 운영 원장의 상태는 Discord 상태판에서 호스트별로 확인한다.
+
+Mac mini의 스케줄 환경에서 기존 인증의 `gh`를 실행할 수 있으면 `monitor.yml`의 마지막
+GitHub 예약 시작도 확인한다. 90분 이상 실행이 없을 때와 실행이 재개될 때 각각 한 번 알린다.
+마지막 시작 시각과 신선도는 `/healthz.macProbe.githubMonitor`에 표시한다. `gh`가 없거나
+권한을 확인할 수 없으면 `unknown`으로 표시한다. Homebrew로 설치했다면 스케줄에서
+해당 바이너리를 찾을 수 있도록 `PATH`를 설정한다.
+
 기본 운영 접점은 사용 중인 Discord로 유지한다. 새로운 Slack 채널이나 매 작업 완료 알림을
 추가할 필요는 없다. 일일 집계가 실제로 필요할 때 기존 리포트를 선택해 연결한다.
 Obsidian에는 조건에 해당하는 결정·상태·다음 행동을 남기며 모든 소스·툴 결과를 복제하지 않는다.
@@ -193,8 +220,8 @@ Obsidian에는 조건에 해당하는 결정·상태·다음 행동을 남기며
 기존 심볼릭 링크를 유지한다. 주간 회고에서는 커밋 전체 대신 레포당 변화와 미해결 행동을 압축하고,
 프로젝트 허브는 `repos.json`을 따라 찾는다.
 
-- `inbox_fetch.py list --max-pages 20`: 최대 2,000개 범위. 전체 탐색을 완료하지 못하면 실패한다.
-  오래된 큐가 더 크면 검토 후 max-pages를 늘린다. 실패를 빈 큐로 취급하지 않는다.
+- `inbox_fetch.py list --max-pages 20`은 채널·봇별 마지막 메시지 ID부터 최대 2,000개를 조회한다. 페이지마다 커서와 미처리 캡처 ID를 같은 SQLite 트랜잭션에 기록한다. 처음에는 채널의 가장 오래된 이력부터 읽는다.
+  상한에서 발견한 항목은 바로 처리할 수 있다. 이력이 더 남고 미처리 항목이 없으면 실패를 반환한다. 다음 실행은 마지막 커서부터 이어간다. 2,000자를 넘는 봇 캡처는 Discord 텍스트 첨부에서 원문을 복원한다.
 - 노트에 완료 마커 `<!-- inbox:discord:ID -->`를 남긴 뒤
   `ops_report.py receipt written ID --note "상대경로.md"`로 확인한다.
 - 여러 노트를 바꾸는 항목은 대상·진행을 로컬 복구 메모에 두고 **모든 변경 검증 후** 마지막에 완료 마커를 쓴다.

@@ -258,18 +258,21 @@ class PostTest(unittest.TestCase):
 
     def test_successful_post_contains_verified_source_revision(self):
         revision = "a" * 40
+        operations = {"hostname": "test-mini", "jobs": [{"job": "vault-push", "status": "unknown"}]}
         with patch.object(sys, "argv", ["vault_sync.py"]), \
                 patch.object(vault_sync.os.path, "isdir", return_value=True), \
                 patch.object(vault_sync, "git_output", return_value=revision), \
                 patch.object(vault_sync, "markdown_clean"), \
                 patch.object(vault_sync, "collect", return_value=[]), \
                 patch.object(vault_sync, "preflight", return_value=revision) as preflight, \
+                patch.object(vault_sync.ops_report, "host_job_health", return_value=operations), \
                 patch.object(vault_sync, "load_ops_env", return_value={}), \
                 patch.object(vault_sync, "post", return_value=0) as post, \
                 contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(vault_sync.main(), 0)
         preflight.assert_called_once_with(vault_sync.VAULT, revision)
         self.assertEqual(post.call_args.args[0]["sourceRevision"], revision)
+        self.assertEqual(post.call_args.args[0]["operations"], operations)
 
     def test_preflight_failure_does_not_load_credentials_or_post(self):
         with patch.object(sys, "argv", ["vault_sync.py"]), \

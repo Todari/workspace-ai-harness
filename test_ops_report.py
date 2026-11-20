@@ -58,6 +58,18 @@ class OperationsTest(unittest.TestCase):
         row = next(r for r in ops.job_health(self.db, time.time() + 40*3600) if r['job'] == 'inbox-sweep')
         self.assertEqual(row['status'], 'stale')
 
+    def test_host_job_health_identifies_the_local_ledger(self):
+        with mock.patch.object(ops.socket, 'gethostname', return_value='fixture-mini'):
+            report = ops.host_job_health(self.db)
+        self.assertEqual(report['hostname'], 'fixture-mini')
+        self.assertTrue(all(row['status'] == 'unknown' for row in report['jobs']))
+
+    def test_unreadable_ledger_remains_unknown(self):
+        self.db.write_text('unreadable fixture')
+        report = ops.host_job_health(self.db)
+        self.assertEqual({row['job'] for row in report['jobs']}, set(ops.JOB_MAX_AGE))
+        self.assertTrue(all(row['status'] == 'unknown' for row in report['jobs']))
+
     def test_running_job_is_not_started_twice_even_with_shorter_timeout(self):
         lockpath = self.db.parent / '.job-inbox-sweep.lock'
         with lockpath.open('a') as lock:
@@ -98,6 +110,18 @@ class OperationsTest(unittest.TestCase):
             self.assertEqual(ops.deliver('slack', url, 'summary', 'one', db=self.db, retry_failed=True), 'already-uncertain')
         self.assertEqual(opener.open.call_count, 1)
         self.assertNotIn(b'SECRET', self.db.read_bytes())
+
+    def test_monitor_can_opt_into_retrying_uncertain_delivery(self):
+        opener = mock.MagicMock()
+        response = opener.open.return_value
+        response.__enter__.return_value.status = 200
+        opener.open.side_effect = [TimeoutError('fixture timeout'), response]
+        url = 'https://discord.com/api/webhooks/123/SECRET'
+        with mock.patch.object(ops.urllib.request, 'build_opener', return_value=opener):
+            self.assertEqual(ops.deliver('discord', url, 'alert', 'probe', db=self.db), 'uncertain')
+            self.assertEqual(ops.deliver('discord', url, 'alert', 'probe', db=self.db, retry_uncertain=True), 'sent')
+            self.assertEqual(ops.deliver('discord', url, 'alert', 'probe', db=self.db, retry_uncertain=True), 'already-sent')
+        self.assertEqual(opener.open.call_count, 2)
 
     def test_preview_never_sends(self):
         report = {'generated_at': 'now', 'jobs': [], 'metrics': {'days': 1}}

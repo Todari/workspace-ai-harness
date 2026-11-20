@@ -74,15 +74,25 @@ class ActiveTest(unittest.TestCase):
             subprocess.run(["git", "-C", repo, "init", "-q", "-b", "main"], check=True)
             subprocess.run(["git", "-C", repo, "-c", "user.email=t@t", "-c", "user.name=t",
                             "commit", "--allow-empty", "-q", "-m", "c"], check=True)
-            subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "-b", "feat",
-                            os.path.join(ws, "linkive", "main-repo-feat")], check=True)
+            derived = os.path.join(ws, "linkive", "main-repo-feat")
+            detached = os.path.join(ws, "elsewhere with spaces")
+            subprocess.run(["git", "-C", repo, "worktree", "add", "-q", "-b", "feat", derived], check=True)
+            subprocess.run(["git", "-C", derived, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "--allow-empty", "-q", "-m", "worktree only"], check=True)
+            subprocess.run(["git", "-C", derived, "worktree", "add", "-q", "--detach", detached], check=True)
+            subprocess.run(["git", "-C", detached, "-c", "user.email=t@t", "-c", "user.name=t",
+                            "commit", "--allow-empty", "-q", "-m", "detached only"], check=True)
             orig_ws, orig_reg = lib.WORKSPACE_ROOT, repos.REGISTRY
             lib.WORKSPACE_ROOT, repos.REGISTRY = ws, "/nonexistent/repos.json"
             try:
-                rows = repos.active(7)
+                rows = repos.active(7, include_log=True)
             finally:
                 lib.WORKSPACE_ROOT, repos.REGISTRY = orig_ws, orig_reg
         self.assertEqual([row["path"] for row in rows], ["linkive/main-repo"])
+        self.assertEqual(rows[0]["commits"], 3)
+        entries = [line.split("\t", 1) for line in rows[0]["log"]]
+        self.assertEqual(len({sha for sha, _ in entries}), 3)
+        self.assertEqual({subject for _, subject in entries}, {"c", "worktree only", "detached only"})
 
 
 if __name__ == "__main__":

@@ -26,8 +26,10 @@ HOOKS = (
     {"event": "SessionStart", "script": "repo_map.py", "timeout": 10},
     {"event": "SessionStart", "script": "obsidian_bridge.py", "timeout": 10},
     {"event": "SubagentStart", "script": "vault_subagent.py", "timeout": 10},
+    {"event": "PreToolUse", "script": "verify_gate.py", "timeout": 5,
+     "claude_matcher": "Bash", "codex_matcher": "^Bash$"},
     {"event": "PostToolUse", "script": "verify_gate.py", "timeout": 5,
-     "claude_matcher": "Edit|Write|NotebookEdit|Bash",
+     "claude_matcher": "Edit|MultiEdit|Write|NotebookEdit|Bash|TaskOutput",
      "codex_matcher": "^(Bash|apply_patch|Edit|Write)$"},
     {"event": "Stop", "script": "verify_gate.py", "timeout": 5},
 )
