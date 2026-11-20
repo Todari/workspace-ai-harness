@@ -199,6 +199,8 @@ Mac mini에 맞춰 등록한다. 새 환경에서는 서버와 Mac mini 모두 �
 전송 대기는 로컬 캐시의 `mac-bot-monitor.json`에 기록해 다음 실행에서 발생 순서대로 재시도한다.
 Discord가 메시지를 받고 응답이 유실된 경우 재시도에서 중복 알림이 생길 수 있다.
 
+GitHub CLI를 사용할 수 없으면 공개 Actions API로 같은 예약 실행을 조회한다. 이 경로에는 자격 증명이 필요하지 않다.
+
 각 점검은 기존 볼트 서명으로 `/webhook/mac-monitor`에 시각과 결과를 보고한다.
 공개 `/healthz`의 `macProbe`에서 보고 기록과 지연을 확인할 수 있다. 최초 수신 전에는
 `unknown`, 30분 30초를 넘기면 `stale`이다. GitHub Actions 감시는 기존 봇 점검을 계속하며

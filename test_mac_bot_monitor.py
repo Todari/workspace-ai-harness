@@ -71,7 +71,14 @@ class MacBotMonitorTest(unittest.TestCase):
             self.assertEqual(monitor.github_last_started(now), now - dt.timedelta(minutes=30))
         self.assertIn('--workflow', run.call_args.args[0])
         self.assertIn('schedule', run.call_args.args[0])
-        with mock.patch.object(monitor.subprocess, 'run', side_effect=FileNotFoundError):
+        with mock.patch.object(monitor.subprocess, 'run', side_effect=FileNotFoundError), \
+                mock.patch.object(monitor.urllib.request, 'build_opener') as opener:
+            request = opener.return_value.open
+            request.return_value.__enter__.return_value.read.return_value = json.dumps({
+                'workflow_runs': [{'status': 'completed', 'run_started_at': '2026-01-01T11:00:00Z'}]}).encode()
+            self.assertEqual(monitor.github_last_started(now), now - dt.timedelta(hours=1))
+            self.assertFalse(request.call_args.args[0].has_header('Authorization'))
+            request.side_effect = OSError
             self.assertIsNone(monitor.github_last_started(now))
 
     def test_get_validates_response_shape(self):

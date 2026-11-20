@@ -54,10 +54,26 @@ def github_last_started(now):
             check=True, timeout=TIMEOUT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, env={**os.environ, 'GH_PROMPT_DISABLED': '1'})
         runs = json.loads(result.stdout)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        # This public workflow is readable without a token, including from unattended cron.
+        url = ('https://api.github.com/repos/Todari/todari-ops/actions/workflows/'
+               'monitor.yml/runs?event=schedule&per_page=5')
+        request = urllib.request.Request(url, headers={'User-Agent': 'workspace-harness-monitor',
+                                                       'Accept': 'application/vnd.github+json'})
+        try:
+            with urllib.request.build_opener(ops_report.NoRedirect()).open(request, timeout=TIMEOUT) as response:
+                runs = json.loads(response.read(1024 * 1024))['workflow_runs']
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            return None
+        except (OSError, ValueError, TypeError, KeyError):
+            return None
+    try:
         starts = []
         for row in runs:
-            if row['status'] in ('completed', 'in_progress') and row['startedAt']:
-                started = dt.datetime.fromisoformat(row['startedAt'].replace('Z', '+00:00'))
+            timestamp = row.get('startedAt') or row.get('run_started_at')
+            if row['status'] in ('completed', 'in_progress') and timestamp:
+                started = dt.datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                 if started.tzinfo and started <= now:
                     starts.append(started.astimezone(dt.timezone.utc))
         return max(starts, default=None)
